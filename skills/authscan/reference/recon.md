@@ -152,7 +152,7 @@ Assemble all findings into a structured document:
 
 If any auth pattern was found through autonomous exploration (not matching any reference pattern):
 1. Record the pattern details in `recon_context.md` under a "Discovered Patterns" section
-2. **Do NOT write to `learned_patterns/` or any reference file** — these will be presented to the user for review during the Report phase (Phase 3)
+2. **Do NOT write to `extended-knowledge.md` or any reference file** — these will be presented to the user for review during the Report phase (Phase 3)
 3. Include enough detail for the user to evaluate: pattern name, mechanism, search keywords, code example
 
 ## Completion Criteria

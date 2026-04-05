@@ -32,17 +32,19 @@ Look for patterns that only become visible when analyzing multiple endpoints tog
 
 Sort all findings by severity:
 
-| Priority | Risk Type | Severity |
-|----------|-----------|----------|
-| P0 | Unauthorized access (no auth at all) | CRITICAL |
-| P1 | Vertical privilege escalation (insufficient role check) | HIGH |
-| P2 | Horizontal privilege escalation — write operations (BOLA write) | HIGH |
-| P3 | Horizontal privilege escalation — read operations (BOLA read) | HIGH |
-| P4 | Post-auth write risk pending (R6) | HIGH |
-| P5 | Mass assignment (sensitive field writable) | MEDIUM |
-| P6 | Data leakage via output (untrusted query results returned) | MEDIUM |
-| P7 | Information oracle (boolean/enum enumeration) | LOW |
-| P8 | Needs manual review (depth limit / circular call) | INFO |
+| Priority | Risk Type | Severity | Description |
+|----------|-----------|----------|-------------|
+| P0 | Unauthorized access | CRITICAL | Endpoint has no auth at all |
+| P1 | Identity impersonation | CRITICAL | User-controlled identity param (userId/accountId/tenantId) used where session identity should be — attacker acts as ANY user |
+| P2 | Vertical privilege escalation | HIGH | Insufficient role/permission check for the endpoint's function |
+| P3 | BOLA — write (resource) | HIGH | Resource ID reaches write datasink without auth binding |
+| P4 | Post-auth write risk pending | HIGH | Write operation executed before auth validation (R6) |
+| P5 | BOLA — read (resource) | MEDIUM | Resource ID reaches read datasink without auth binding |
+| P6 | Mass assignment | MEDIUM | Sensitive field writable from user input without filtering |
+| P7 | Data leakage via output | MEDIUM | Untrusted query results returned to user |
+| P8 | Information oracle | LOW | Boolean/enum return allows enumeration |
+| P9 | Filter/scope param risk | LOW | Filter param without auth may expose cross-user aggregation |
+| P10 | Needs manual review | INFO | Exceeded depth limit or circular call |
 
 ## Step 4 — Generate Final Report
 
@@ -59,10 +61,10 @@ Sort all findings by severity:
 
 | Severity | Count | Types |
 |----------|-------|-------|
-| CRITICAL | {n} | Unauthorized access |
-| HIGH | {n} | Vertical PE, Horizontal PE, Post-auth write |
-| MEDIUM | {n} | Mass assignment, Data leakage |
-| LOW | {n} | Information oracle |
+| CRITICAL | {n} | Unauthorized access, Identity impersonation |
+| HIGH | {n} | Vertical PE, Horizontal PE (write), Post-auth write |
+| MEDIUM | {n} | Horizontal PE (read), Mass assignment, Data leakage |
+| LOW | {n} | Information oracle, Filter/scope param risk |
 
 ## Critical & High Findings
 
@@ -134,32 +136,37 @@ Use explicit field whitelists or dedicated DTOs that exclude sensitive fields.
 
 Review all analysis notes for auth patterns that were identified through autonomous exploration (not matched from references).
 
-**Do NOT write directly to any reference or learned_patterns file. Instead, present findings to the user.**
+**Do NOT write directly to any reference file. Instead, present findings to the user.**
 
 In the report, add a section:
 
 ```markdown
-## Discovered Auth Patterns (Pending User Review)
+## Discovered Patterns & Insights (Pending User Review)
 
-The following auth patterns were found during analysis but are not yet in the reference library.
-Please review and confirm which ones should be added to the knowledge base.
+The following items were found during analysis but are not yet in the reference library.
+Please review and confirm which ones should be added to the extended knowledge base.
 
 ### Pattern 1: {Pattern Name}
+- **Type:** auth-pattern / datasink / trust-rule-extension / methodology-note
 - **Framework/Language:** {info}
 - **Search keywords:** `keyword1`, `keyword2`
-- **Mechanism:** {description}
-- **Trust anchor source:** {how the anchor is obtained}
+- **Description:** {description}
 - **Example:**
   ```{language}
   {code}
   ```
-- **Discovered in:** {project_name}, {date}
-- **Recommendation:** Add to reference / Skip / Needs further validation
+- **Source project:** {project_name}, {date}
+- **Recommendation:** Add to extended knowledge / Skip / Needs further validation
 
 ### Pattern 2: ...
 ```
 
-After the user reviews and approves specific patterns, THEN write the approved ones to `learned_patterns/discovered-auth-patterns.md`.
+After the user reviews and approves specific entries, THEN append the approved ones to `extended-knowledge.md` (in the reference directory).
+
+**Important:**
+- Never modify existing reference files (auth-patterns-*.md, datasink-patterns.md, etc.)
+- `extended-knowledge.md` is the append-only external knowledge extension
+- Whether to eventually merge extended knowledge into main references is the developer's decision
 
 ## Completion Criteria
 

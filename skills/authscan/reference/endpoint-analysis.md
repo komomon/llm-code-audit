@@ -6,6 +6,28 @@
 
 **MUST READ:** Load `trust-propagation-rules.md` (in this same reference directory) — the 8 trust rules are the foundation of all judgments in this phase.
 
+**Also load:** `extended-knowledge.md` for any user-confirmed patterns from previous analyses.
+
+## CRITICAL: Per-Endpoint Independence Principle
+
+**Analyze this endpoint as if the attacker calls it directly and independently with arbitrary parameters.**
+
+- Do NOT assume database data is "safe" because another endpoint wrote it with auth
+- Do NOT trust data from DB/cache/external just because it "originally came from a trusted endpoint"
+- Each input parameter must establish its OWN trust chain to an auth anchor WITHIN THIS endpoint
+- A DB query result is only trusted if the query's WHERE clause includes an auth anchor — the data's origin is irrelevant
+
+**Example — the trap to avoid:**
+```java
+// Endpoint A (has auth): POST /orders → INSERT (id, userId=sessionId, data)
+// Endpoint B (we're analyzing): GET /orders/{orderId} → SELECT * WHERE id=orderId
+//
+// WRONG: "orderId references auth-protected data, so it's safe"
+// RIGHT: "orderId has NO trust chain to auth anchor in THIS endpoint → AT RISK"
+```
+
+This principle ensures the analysis catches real BOLA vulnerabilities where the auth gap exists precisely between endpoints.
+
 ## Layer 0 — Endpoint-Level Auth Check
 
 **Goal:** Before analyzing parameters, determine if the endpoint itself has adequate access control.
@@ -34,14 +56,14 @@
 
 This is the primary analysis. Trace every user-controlled input parameter through the entire function to determine its trust status.
 
-### Step 1: Parameter Expansion
+### Step 1: Parameter Expansion & Semantic Classification
 
 1. Read the entry function signature
 2. Extract all parameters
-3. Classify each parameter:
+3. Classify each parameter by **source**:
 
-| Classification | Description | Action |
-|---------------|-------------|--------|
+| Source Classification | Description | Action |
+|----------------------|-------------|--------|
 | **User-controlled** | From HTTP request body/query/path/header that user can modify | Needs trust chain analysis |
 | **Framework-injected auth** | `@AuthenticationPrincipal`, `HttpSession`, `request.user` | Mark as **trust anchor** immediately |
 | **Framework-injected non-auth** | `HttpServletRequest`, `HttpServletResponse` | Ignore unless used to extract auth info |
@@ -51,11 +73,35 @@ This is the primary analysis. Trace every user-controlled input parameter throug
    - List all fields with their types
    - Each field is a separate analysis target
 
+5. **For each user-controlled parameter, also classify by semantic role:**
+
+| Semantic Role | Indicators (field name / type / usage) | Risk Elevation |
+|--------------|----------------------------------------|----------------|
+| **Identity parameter** | `userId`, `accountId`, `tenantId`, `ownerId`, `operatorId`, `createdBy`, `memberId` — any param that represents WHO is performing the action or WHO owns the data | **CRITICAL if at_risk** — identity impersonation enables access to ALL of target user's resources |
+| **Resource parameter** | `orderId`, `fileId`, `recordId`, `documentId` — any param that identifies WHICH specific resource to access | **HIGH if at_risk** — classic BOLA, scoped to one resource |
+| **Filter/scope parameter** | `status`, `type`, `category`, `page`, `limit` — params that filter or scope results | **LOW if at_risk** — typically limited impact |
+| **Data parameter** | `name`, `email`, `content`, `description` — params that carry data to be stored | **Check via Layer 3** (mass assignment) |
+
+**Why this matters:** A user-controlled `userId` that reaches a datasink without auth binding is NOT just "horizontal privilege escalation" — it's **identity impersonation**. The attacker can act as ANY user. This is categorically more severe than accessing one record via `orderId`.
+
+**Identity impersonation detection rule:** If a user-controlled parameter with identity semantic role is used WHERE the trust anchor (session userId) SHOULD have been used, flag as **CRITICAL: Identity Impersonation Risk** — the endpoint accepts user identity from input instead of from authentication context.
+
 **Record:**
+```json
+{
+  "param": "orderRequest.userId",
+  "type": "user_controlled",
+  "semantic_role": "identity",
+  "expanded_from": "OrderRequest orderRequest → userId (Long)",
+  "source": "RequestBody",
+  "note": "Identity parameter from user input — should come from session"
+}
+```
 ```json
 {
   "param": "orderRequest.orderId",
   "type": "user_controlled",
+  "semantic_role": "resource",
   "expanded_from": "OrderRequest orderRequest → orderId (Long)",
   "source": "RequestBody"
 }
@@ -165,16 +211,34 @@ When a parameter is passed to another function:
 
 ### Step 5: Compile Parameter Risk List
 
-After tracing all parameters, classify each:
+After tracing all parameters, classify each and determine severity using both trust status AND semantic role:
 
-| Status | Criteria | Severity |
-|--------|----------|----------|
+| Status | Criteria | Base Severity |
+|--------|----------|---------------|
 | **trust_anchor** | Comes from auth source (session, token, injection) | None |
 | **trusted** | Established association with anchor via R1-R5 | None |
 | **risk_free** | Not used in any datasink, or only echoed back as-is | None |
-| **at_risk** | Reaches datasink without anchor association (R8) | HIGH (write) / MEDIUM (read) |
-| **risk_pending** | Write operation before auth association (R6) | HIGH |
+| **at_risk** | Reaches datasink without anchor association (R8) | See severity table below |
+| **risk_pending** | Write operation before auth association (R6) | See severity table below |
 | **needs_review** | Exceeded depth limit or circular call | LOW |
+
+**Severity elevation by semantic role** (for `at_risk` and `risk_pending` params):
+
+| Semantic Role | Read Operation | Write Operation | Why |
+|--------------|---------------|-----------------|-----|
+| **Identity** (userId, accountId, tenantId) | **CRITICAL** | **CRITICAL** | Identity impersonation — attacker acts as ANY user, affects all their resources |
+| **Resource** (orderId, fileId, recordId) | **MEDIUM** | **HIGH** | Classic BOLA — scoped to one resource per request |
+| **Filter/Scope** (status, type, page) | **LOW** | **MEDIUM** | Usually limited impact, but write can corrupt filtered data sets |
+| **Data** (name, content, description) | — | Check Layer 3 | Data params don't cause BOLA but may cause mass assignment |
+
+**Identity impersonation special case:** If a parameter with `identity` semantic role is `at_risk`, AND a trust anchor (session userId) exists but is NOT used where this identity parameter is used, explicitly flag:
+```json
+{
+  "risk_type": "identity_impersonation",
+  "detail": "Endpoint accepts userId from input (dto.userId) but session userId (user.getId()) exists and is unused for this operation",
+  "severity": "CRITICAL"
+}
+```
 
 ## Layer 2 — Output Parameter Backward Trust Chain
 
