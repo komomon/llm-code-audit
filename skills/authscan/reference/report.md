@@ -68,97 +68,48 @@ Sort all findings by severity:
 
 ## Detailed Findings (Per Endpoint)
 
-**For EACH endpoint with risks, generate the following complete analysis. Do NOT skip parameters — every at-risk parameter must be individually explained AND combined into attack scenarios.**
+**Phase 3 is where you transform analysis.json conclusions into a clear, actionable report for the user.** The analysis intelligence was spent in Phase 2. Here you PRESENT it.
 
-### Endpoint: {endpoint} ({method})
-**Handler:** `{ClassName.method}` @ `{file}:{line_start}-{line_end}`
-**Trust Anchors:** {anchor_name} from `{source}` @ `{file}:{line}`
+**For EACH endpoint with risks, the report must answer these questions for the user:**
+1. **What parameters are at risk?** — List ALL of them, not just the most obvious one
+2. **Why?** — Which rule was violated, where in the code
+3. **How can it be exploited?** — Concrete attack scenario(s), especially when multiple params interact
+4. **Where to fix?** — Specific code location + fix direction
 
-#### All Affected Parameters
+**Report structure per endpoint:**
 
-**For EACH at-risk parameter, provide a complete risk card:**
+```markdown
+### {endpoint} ({method}) — {highest_severity}
 
-##### Parameter: `{param_name}` — {severity}
-- **Source:** {where the param comes from — RequestBody field / PathVariable / QueryParam}
-- **Semantic Role:** {identity / resource / filter / data}
-- **Trust Status:** {at_risk / risk_pending / identity_impersonation}
-- **Applied Rule:** {R8 / R9 / R10 / etc.}
-- **Risk Propagation Chain (full code trace):**
-  ```
-  User Input: request.{param} (user-controlled)
-    ↓ used at: {file}:{line} — {code snippet}
-    ↓ flows to: {next_function}() @ {file}:{line}
-    ↓ reaches datasink: {operation} @ {file}:{line}
-    ✗ NO trust anchor association found in this path
-  ```
-- **Vulnerability:** {what an attacker can do with this specific parameter}
-- **Code Location:** `{file}:{line_start}-{line_end}` — {brief code context}
+**Handler:** `{function}` @ `{file}:{line_start}-{line_end}`
+**Trust Anchor:** {anchor} from `{source}` @ `{file}:{line}` | Credibility: {trusted/compromised}
 
-##### Parameter: `{param_name_2}` — {severity}
-(same structure for each parameter)
+**Affected Parameters:**
 
-#### Combined Attack Scenarios
+| Parameter | Role | Status | Rule | Datasink Location | Severity |
+|-----------|------|--------|------|-------------------|----------|
+| `orderNo` | resource | at_risk | R8 | `OrderDAO.java:12` | HIGH |
+| `enterpriseId` | identity | at_risk | R8+R9 | `OrderService.java:193` | CRITICAL |
+| `verifyId` | resource | risk_pending | R6 | `VerifyService.java:45` | HIGH |
 
-**CRITICAL: When multiple parameters are at-risk, describe how they work TOGETHER to enable attacks. Do not just list individual parameter risks — show the combined exploitation.**
+**Attack Scenario:**
+{Describe how an attacker exploits this endpoint. When multiple params are at risk, explain how they COMBINE:
+- Which param(s) control what — e.g., "orderNo locates the target record, enterpriseId substitutes the owner identity"
+- What the attacker achieves — e.g., "confirms another enterprise's order under a different enterprise identity"
+- Reference specific code lines in the narrative}
 
-**Attack Scenario 1: {scenario_title}**
-| Step | Attacker Action | Exploited Parameter(s) | System Behavior | Code Location |
-|------|----------------|----------------------|-----------------|---------------|
-| 1 | {action} | `{param}` | {what system does} | `{file}:{line}` |
-| 2 | {action} | `{param1}` + `{param2}` | {what system does} | `{file}:{line}` |
-| 3 | ... | ... | ... | ... |
-| **Result** | **{attack outcome — what the attacker achieves}** | | | |
+**Trust Chain:**
+{Simple text tree: anchor → trusted params → where the chain breaks → at-risk params}
 
-**Attack Scenario 2: {scenario_title}** (if applicable)
-(same table format)
-
-**Multi-Parameter Interaction Analysis:**
-- How do the at-risk parameters relate to each other? (e.g., `orderNo` locates the record, `enterpriseId` is used in the write — together they enable querying any record AND writing arbitrary enterprise identity)
-- Which combination creates the most severe impact?
-- Are some parameter risks dependent on others? (e.g., `param2` is only exploitable if `param1` is also controllable)
-
-#### Trust Chain Visualization
-
-```
-Trust Anchor: {anchor_name} @ {file}:{line}
-  │
-  ├─→ [TRUSTED] {param1} → {operation} @ {file}:{line} (R1: direct association)
-  │     └─→ [TRUSTED] {derived_result} (R2: derived trust)
-  │
-  ├─✗ [AT RISK] {param3} → {datasink} @ {file}:{line} (R8: no association)
-  │     └─✗ [AT RISK] {query_result} → returned to user @ {file}:{line}
-  │
-  └─✗ [CRITICAL] {param4} (identity) → {write_datasink} @ {file}:{line} (R9: stored identity not verified)
-        └─ Stored identity: {stored_field} @ {file}:{line} — NOT compared with anchor
+**Remediation:**
+{For each at-risk param, one concrete fix direction with code location. Keep it brief — the user knows their codebase.}
 ```
 
-#### Remediation (Endpoint-Specific)
-
-**For each at-risk parameter, provide the specific fix with code:**
-
-```java
-// Fix for {param1}: Add trust anchor to query constraint
-// Before (vulnerable):
-{vulnerable_code_line}
-
-// After (fixed):
-{fixed_code_line}
-```
-
-```java
-// Fix for {param2}: Add identity comparison (R9)
-// Before (vulnerable):
-{vulnerable_code_line}
-
-// After (fixed):
-if (!currentUserId.equals(storedIdentity)) {
-    throw new AccessDeniedException("Not authorized");
-}
-```
-
----
-
-(Repeat the above structure for each endpoint with findings)
+**Key guidelines:**
+- Do NOT skip parameters. If 3 params are at_risk, all 3 must appear.
+- Do NOT write isolated per-parameter attack stories. Show how they interact.
+- Keep it concise — the table covers the facts, the narrative explains the exploitation logic.
+- Every code reference must include `file:line` so the user can jump to it.
 
 ## Cross-Endpoint Issues
 

@@ -45,17 +45,14 @@ Analyze code for authorization vulnerabilities by tracing trust relationships be
     - [ ] 3.4 `[COND]` **Layer 3** — Mass assignment check (only for write operations):
       - [ ] Read `reference/mass-assignment-patterns.md`
       - [ ] Trace input fields to write datasinks, identify sensitive fields without filtering
-    - [ ] 3.5 Generate `analysis.json` for this endpoint, including:
-      - [ ] Per-parameter risk cards with full propagation chains (code file + line at each step)
-      - [ ] `[COND]` Multiple at-risk params? → Generate combined attack scenarios showing how params interact
-      - [ ] Trust chain visualization (text-based tree showing anchor → trusted → at_risk paths)
+    - [ ] 3.5 Generate concise `analysis.json` — conclusions only (param + rule + severity + code location)
     - [ ] 3.6 **Loop check:** more endpoints remaining? → return to 3.1 for next endpoint
 
 - [ ] **4. Phase 3: Report & Self-Learning** — read `reference/report.md`
   - [ ] 4.1 Aggregate all endpoint analysis.json results
   - [ ] 4.2 Cross-endpoint correlation (shared vulnerable functions, auth gaps, inconsistencies)
   - [ ] 4.3 Risk prioritization (CRITICAL → HIGH → MEDIUM → LOW → INFO)
-  - [ ] 4.4 Generate `report.md` (per-endpoint: all affected params + propagation chains + combined attack scenarios + trust chain visualization + specific remediation code) + `report.json`
+  - [ ] 4.4 Generate `report.md` + `report.json` — transform analysis conclusions into user-facing report (all affected params, combined attack scenario, trust chain, remediation per endpoint)
   - [ ] 4.5 `[COND]` If new patterns discovered → list in report for user review (do NOT auto-write to any file)
 
 ## Invocation
@@ -139,13 +136,13 @@ If you discover an auth pattern, datasink pattern, or analysis insight NOT cover
 
 ## Result JSON Location Tracking
 
-**Every function reference in output JSON MUST include:**
+**Every function/code reference in output JSON MUST include:**
 ```json
 {
   "function": "ClassName.methodName",
-  "file": "src/main/java/com/example/Controller.java",
+  "file": "src/main/java/com/example/controller/Controller.java",
   "line_start": 45,
   "line_end": 78
 }
 ```
-This enables re-verification — the LLM or human can jump directly to the code location to confirm findings.
+**`file` must be the FULL relative path from project root** (e.g., `src/main/java/com/example/dao/OrderDAO.java`), NOT just the filename (`OrderDAO.java`). Full paths enable: direct code navigation, call chain visualization across packages/modules, and unambiguous file identification in large projects.

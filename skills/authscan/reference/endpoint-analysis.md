@@ -344,6 +344,10 @@ Read and follow `output-analysis.md` (in this same reference directory) for this
 
 ## Result Output Format
 
+**Design principle:** analysis.json captures **analysis conclusions** — what is at risk, why, where, and how parameters relate to each other. Presentation formatting (attack scenario narratives, remediation code) is generated in Phase 3 from these conclusions.
+
+**Balance:** Include enough data that Phase 3 can generate a detailed report WITHOUT re-reading source code. Don't include presentation formatting (step-by-step tables, tree diagrams).
+
 Each endpoint analysis produces `analysis.json`:
 
 ```json
@@ -356,15 +360,15 @@ Each endpoint analysis produces `analysis.json`:
     "line_start": 45,
     "line_end": 78
   },
-  "analysis_timestamp": "2026-04-05T10:30:00Z",
   "endpoint_level_risks": [],
   "trust_anchors": [
     {
       "name": "currentUserId",
       "source": "session.getAttribute(\"userId\")",
-      "file": "OrderController.java",
+      "file": "src/main/java/com/example/controller/OrderController.java",
       "line_start": 48,
-      "line_end": 48
+      "line_end": 48,
+      "credibility": "trusted"
     }
   ],
   "parameter_risk_list": [
@@ -375,30 +379,8 @@ Each endpoint analysis produces `analysis.json`:
       "expanded_from": "RequestParam orderId (Long)",
       "trust_status": "at_risk",
       "trust_rule": "R8",
-      "reason": "orderId used in SELECT ... WHERE id=orderId without session binding",
-      "risk_propagation_chain": [
-        {
-          "step": 1,
-          "description": "User input: request.orderId (user-controlled)",
-          "code": "Long orderId = request.getParameter(\"orderId\")",
-          "file": "src/main/java/com/example/controller/OrderController.java",
-          "line": 47
-        },
-        {
-          "step": 2,
-          "description": "Passed to DAO method without trust anchor",
-          "code": "Order order = orderDAO.findById(orderId)",
-          "file": "src/main/java/com/example/controller/OrderController.java",
-          "line": 52
-        },
-        {
-          "step": 3,
-          "description": "Reaches DB query datasink — NO anchor in WHERE clause",
-          "code": "SELECT * FROM orders WHERE id = ?",
-          "file": "src/main/java/com/example/dao/OrderDAO.java",
-          "line": 12
-        }
-      ],
+      "severity": "HIGH",
+      "reason": "orderId (user input) flows to OrderDAO.findById() → SELECT WHERE id=orderId. No trust anchor (currentUserId) in query constraint. Attacker can enumerate orderId to access any user's order.",
       "affected_datasinks": [
         {
           "operation": "SELECT * FROM orders WHERE id = ?",
@@ -408,45 +390,17 @@ Each endpoint analysis produces `analysis.json`:
           "line_end": 15,
           "op_type": "read"
         }
-      ],
-      "severity": "HIGH",
-      "exploitation": "Attacker can query any user's order by enumerating orderId values"
+      ]
     }
   ],
   "output_risk_list": [],
   "mass_assignment_risks": [],
-  "attack_scenarios": [
-    {
-      "title": "Horizontal privilege escalation via orderId enumeration",
-      "severity": "HIGH",
-      "involved_params": ["orderId"],
-      "steps": [
-        {
-          "step": 1,
-          "attacker_action": "Call GET /api/order/detail?orderId=1001 (another user's order)",
-          "exploited_params": ["orderId"],
-          "system_behavior": "System queries orders WHERE id=1001, returns order belonging to victim user",
-          "code_location": "OrderDAO.java:12"
-        },
-        {
-          "step": 2,
-          "attacker_action": "Enumerate orderId from 1 to N to harvest all orders",
-          "exploited_params": ["orderId"],
-          "system_behavior": "System returns each order without checking ownership",
-          "code_location": "OrderController.java:52"
-        }
-      ],
-      "impact": "Attacker can read ALL users' order data including sensitive information",
-      "root_cause": "orderId reaches datasink without trust anchor binding (R8)",
-      "multi_param_interaction": "Single parameter vulnerability — orderId alone is sufficient for exploitation"
-    }
-  ],
   "trust_chain_summary": {
     "anchors": [
       {
         "name": "currentUserId",
         "source": "session.getAttribute(\"userId\")",
-        "file": "OrderController.java",
+        "file": "src/main/java/com/example/controller/OrderController.java",
         "line": 48,
         "credibility": "trusted"
       }
@@ -464,7 +418,7 @@ Each endpoint analysis produces `analysis.json`:
         "status": "at_risk",
         "rule": "R8",
         "chain": "user_input → OrderDAO.findById(orderId) → SELECT WHERE id=? (no anchor)",
-        "reaches_datasinks": ["OrderDAO.findById @ OrderDAO.java:12-15"]
+        "reaches_datasinks": ["OrderDAO.findById @ src/main/java/com/example/dao/OrderDAO.java:12-15"]
       }
     }
   },
@@ -483,10 +437,15 @@ Each endpoint analysis produces `analysis.json`:
       "line_end": 20,
       "role": "datasink"
     }
-  ],
-  "cross_function_cache": {}
+  ]
 }
 ```
+
+**What each field provides to Phase 3:**
+- `reason`: Detailed enough to write attack narrative (includes: input source → flow path → datasink → why it's a risk)
+- `trust_chain_summary`: Enough to draw the trust chain tree (anchor usage + per-param flow path)
+- `datasink`: Exact code location for remediation suggestions
+- `functions_analyzed`: Code locations for user to navigate to
 
 ## Worked Example
 
