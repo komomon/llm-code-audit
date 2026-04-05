@@ -125,26 +125,26 @@ This is the primary analysis. Trace every user-controlled input parameter throug
 
 **Identity impersonation detection rule:** If a user-controlled parameter with identity semantic role is used WHERE the trust anchor (session userId) SHOULD have been used, flag as **CRITICAL: Identity Impersonation Risk** — the endpoint accepts user identity from input instead of from authentication context.
 
-**Record:**
-```json
-{
-  "param": "orderRequest.userId",
-  "type": "user_controlled",
-  "semantic_role": "identity",
-  "expanded_from": "OrderRequest orderRequest → userId (Long)",
-  "source": "RequestBody",
-  "note": "Identity parameter from user input — should come from session"
-}
+**MANDATORY: Parameter Completeness Gate**
+
+Before proceeding to Step 2, you MUST:
+1. Output a complete parameter table listing EVERY user-controlled parameter
+2. Verify: count of classified params == count of fields in the request DTO/function signature
+3. If counts don't match → you missed parameters. Go back and re-read the DTO definition.
+
 ```
-```json
-{
-  "param": "orderRequest.orderId",
-  "type": "user_controlled",
-  "semantic_role": "resource",
-  "expanded_from": "OrderRequest orderRequest → orderId (Long)",
-  "source": "RequestBody"
-}
+## Parameter Classification Table (MANDATORY — complete this before proceeding)
+
+| # | Parameter | Source | Semantic Role | Risk Base | Classified? |
+|---|-----------|--------|---------------|-----------|-------------|
+| 1 | applyNo | RequestBody.applyNo | Resource | HIGH | [x] |
+| 2 | enterpriseId | RequestBody.enterpriseId | Identity | CRITICAL | [x] |
+| 3 | verifyId | RequestBody.verifyId | Resource | HIGH | [x] |
+
+Parameter count check: DTO has 3 fields, table has 3 rows → ✅ Complete
 ```
+
+**Common trap: analyzing only the "obvious" parameter (like enterpriseId) and skipping others (like applyNo, verifyId).** Every parameter in the request is a potential attack vector. The model MUST classify ALL of them, not just the ones that "look important."
 
 ### Step 2: Trust Anchor Identification
 
@@ -310,6 +310,39 @@ After tracing all parameters, classify each and determine severity using both tr
 }
 ```
 
+### Step 5.5: Multi-Parameter Combination Analysis
+
+**Trigger:** When 2 or more user-controlled parameters are at_risk.
+
+**Why this step exists:** Individual parameter analysis may show each param as HIGH risk. But when parameters COMBINE (e.g., both used as query conditions, or one locates a record and another controls what's written), the combined risk may be CRITICAL. Analyzing only one parameter and stopping is the #1 cause of missed vulnerabilities.
+
+**Steps:**
+
+1. **Identify combination usage points** — where are multiple at-risk params used together?
+   ```java
+   // Common pattern: two params combine in a query
+   repository.load(enterpriseId, applyNo);  // both user-controlled → combined query
+   ```
+
+2. **Assess combined risk:**
+
+   | Combination | Combined Risk | Why |
+   |------------|---------------|-----|
+   | Identity + Resource | CRITICAL | Locate any record + impersonate identity |
+   | Identity + Identity | CRITICAL | Multi-dimensional identity impersonation |
+   | Resource + Resource | HIGH | Multi-resource unauthorized access |
+
+3. **Describe the combined attack** — how do the params interact to enable the attack? Each param plays a role:
+   - Param A does what? (e.g., "locates the target record")
+   - Param B does what? (e.g., "controls which enterprise the account is opened under")
+   - Together: "attacker can locate any record AND substitute the enterprise identity"
+
+4. **Check: does the combined query include a trust anchor?**
+   - `load(enterpriseId, applyNo)` → no anchor → both params unconstrained → CRITICAL
+   - `load(enterpriseId, applyNo, currentUserId)` → anchor present → combination is constrained → lower risk
+
+**Record in analysis.json** as a finding with `involved_params` listing all combined params.
+
 ## Layer 2 — Output Parameter Backward Trust Chain
 
 Read and follow `output-analysis.md` (in this same reference directory) for this layer.
@@ -381,6 +414,12 @@ Each endpoint analysis produces `analysis.json`:
       "trust_rule": "R8",
       "severity": "HIGH",
       "reason": "orderId (user input) flows to OrderDAO.findById() → SELECT WHERE id=orderId. No trust anchor (currentUserId) in query constraint. Attacker can enumerate orderId to access any user's order.",
+      "flow_path": [
+        "request.getParameter(\"orderId\") @ src/main/java/com/example/controller/OrderController.java:47",
+        "orderService.getOrder(orderId) @ src/main/java/com/example/controller/OrderController.java:52",
+        "orderDAO.findById(orderId) @ src/main/java/com/example/service/OrderService.java:30",
+        "SELECT * FROM orders WHERE id = ? @ src/main/java/com/example/dao/OrderDAO.java:12 [DATASINK, NO ANCHOR]"
+      ],
       "affected_datasinks": [
         {
           "operation": "SELECT * FROM orders WHERE id = ?",
@@ -441,11 +480,12 @@ Each endpoint analysis produces `analysis.json`:
 }
 ```
 
-**What each field provides to Phase 3:**
-- `reason`: Detailed enough to write attack narrative (includes: input source → flow path → datasink → why it's a risk)
-- `trust_chain_summary`: Enough to draw the trust chain tree (anchor usage + per-param flow path)
-- `datasink`: Exact code location for remediation suggestions
-- `functions_analyzed`: Code locations for user to navigate to
+**What each field provides to Phase 3 (and user verification):**
+- `reason`: Detailed enough to write attack narrative (input source → flow → datasink → why it's a risk)
+- `flow_path`: String array recording each hop with `file:line` — enables propagation chain visualization and call chain drawing without re-reading code. Only records key hops (function calls, datasinks), not every line.
+- `trust_chain_summary.propagation_tree`: Per-parameter trust status with one-line chain summary — enables trust chain tree visualization
+- `affected_datasinks`: Exact datasink locations for remediation suggestions
+- `functions_analyzed`: All code locations traversed during analysis
 
 ## Worked Example
 
@@ -572,4 +612,98 @@ Anchor: currentUserId @ line 159 [EXISTS BUT UNUSED IN DATA FLOW]
   │           └─ R9 Check 2: stored value orderParam.enterpriseId EXISTS but NOT used
   │
   └─✗ [HIGH] request.verifyId → completeVerification() @ line 182 (R8, side effect)
+```
+
+## Worked Example 3: Python Django DRF — BOLA + Data Leakage
+
+This example shows how to analyze a Python endpoint using Django REST Framework.
+
+```python
+# views.py
+class OrderDetailView(APIView):
+    permission_classes = [IsAuthenticated]                    # line 12: login required
+
+    def get(self, request, order_id):                         # line 14: entry function
+        user = request.user                                   # line 15: trust anchor
+
+        # Fetch order
+        order = Order.objects.get(id=order_id)                # line 18: DB query, NO user scope!
+
+        # Fetch payment info for this order
+        payment = Payment.objects.filter(order=order).first() # line 21: derived from untrusted order
+
+        # Build response
+        serializer = OrderSerializer(order)
+        data = serializer.data
+        data['payment_method'] = payment.method if payment else None    # line 26
+        data['customer_email'] = order.user.email                       # line 27: leaks other user's email!
+        return Response(data)                                           # line 28
+```
+
+```python
+# models.py
+class Order(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE)   # owner
+    product = models.CharField(max_length=100)
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    status = models.CharField(max_length=20)
+
+class Payment(models.Model):
+    order = models.ForeignKey(Order, on_delete=models.CASCADE)
+    method = models.CharField(max_length=50)   # e.g., "credit_card_ending_4242"
+    paid_at = models.DateTimeField()
+```
+
+**Analysis walkthrough:**
+
+1. **Layer 0:** `permission_classes = [IsAuthenticated]` → login required, but no role check. For a simple order detail view, login-only is adequate. Pass.
+
+2. **Layer 0.5:** `request.user` from DRF `IsAuthenticated` → trust anchor is credible (DRF authentication pipeline).
+
+3. **Parameter table:**
+
+   | # | Parameter | Source | Semantic Role | Risk Base | Classified? |
+   |---|-----------|--------|---------------|-----------|-------------|
+   | 1 | order_id | URL path `/orders/{order_id}` | Resource | HIGH | [x] |
+
+   Count: 1 URL param. ✅ Complete.
+
+4. **order_id (Resource):**
+   - Used in `Order.objects.get(id=order_id)` @ line 18
+   - Query constraint: `WHERE id = order_id` — **NO `user` in filter!**
+   - `request.user` exists (line 15) but is **NOT used** in the query
+   - **R8: No Association → at_risk**
+   - Severity: Resource + read = **MEDIUM**
+
+5. **Derived data:**
+   - `order` is untrusted (from R8 query) → all its fields are untrusted
+   - `payment` at line 21: `Payment.objects.filter(order=order)` — derived from untrusted `order` → untrusted (NOT R3, because `order` itself is untrusted)
+   - `order.user.email` at line 27 — accessing the order owner's email. Since `order` could be ANY user's order, this **leaks another user's email** → **Output risk: data leakage**
+
+6. **R9 check:** No stored identity field pattern here (single-stage, not multi-phase). R9 not triggered.
+
+7. **Output analysis (Layer 2):**
+
+   | Return Field | Source | Trust Status |
+   |-------------|--------|-------------|
+   | `order.*` (serializer fields) | `Order.objects.get(id=order_id)` — untrusted | AT RISK |
+   | `payment_method` | `Payment.filter(order=order)` — derived from untrusted | AT RISK |
+   | `customer_email` | `order.user.email` — other user's PII from untrusted query | **AT RISK — PII leakage** |
+
+**Trust Chain:**
+```
+Anchor: request.user @ views.py:15 [EXISTS BUT UNUSED IN QUERY]
+  │
+  └─✗ [MEDIUM] order_id (URL path) → Order.objects.get(id=order_id) @ views.py:18 (R8)
+        └─✗ order (untrusted) → payment (derived untrusted) @ views.py:21
+        └─✗ order.user.email → returned to attacker @ views.py:27 (PII leakage)
+```
+
+**Fix:**
+```python
+# Change line 18 from:
+order = Order.objects.get(id=order_id)
+# To:
+order = get_object_or_404(Order, id=order_id, user=request.user)
+# This adds trust anchor to the query → R1: Direct Association → trusted
 ```

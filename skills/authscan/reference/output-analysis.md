@@ -74,6 +74,56 @@ public boolean checkOrderExists(Long orderId) {
 
 **Severity:** Generally LOW — flag but don't alarm. Mark as `"info_oracle"` type.
 
+## Step 3.5 — Parameter Leakage Risk Assessment (Layer 2.5)
+
+**Trigger:** When the analyzed endpoint is part of a multi-stage flow (e.g., Phase 2 of a create → confirm pattern), OR when the endpoint accepts parameters that are typically returned by another endpoint (transNo, verifyId, applyNo, etc.).
+
+**Why this matters:** Even if Phase 2 properly validates parameters, the PREVIOUS phase may have returned these values to the client in plaintext. If an attacker can obtain these values (network interception, log leakage, URL parameters, other API responses), they have the inputs needed to call Phase 2.
+
+**Analysis steps:**
+
+1. **Identify if this endpoint is a "later stage":**
+   - Does it accept parameters like `transNo`, `applyNo`, `verifyId`, `confirmCode`, `token` that look like system-generated identifiers from a prior operation?
+   - Does the code load stored data using these parameters (multi-stage pattern from datasink-patterns.md Category 11)?
+
+2. **Trace where these parameters originated:**
+   - Search for the corresponding "Phase 1" endpoint that generates/returns these values
+   - Check: does Phase 1 return them in its HTTP response body? In URL parameters? In headers?
+   - If yes → the parameters are exposed to the client and potentially to attackers
+
+3. **Assess leakage + exploitation risk:**
+
+   | Phase 1 Return Method | Leakage Risk | Combined with Phase 2 Auth Gap |
+   |----------------------|-------------|-------------------------------|
+   | Response body (JSON) | MEDIUM — client-side JS can read, network intercept | If Phase 2 has no ownership check → **HIGH** |
+   | URL query parameter | HIGH — browser history, server logs, referrer header | If Phase 2 has no ownership check → **CRITICAL** |
+   | URL path parameter | HIGH — same as above | If Phase 2 has no ownership check → **CRITICAL** |
+   | HTTP header | LOW — harder to intercept | If Phase 2 has no ownership check → **MEDIUM** |
+   | Not returned (server-side only) | NONE — attacker can't obtain | Phase 2 auth gap still matters if value is guessable |
+
+4. **Check predictability of the parameter:**
+   - Sequential IDs (auto-increment) → HIGH leakage risk (enumerable)
+   - UUID v4 → LOW leakage risk (not guessable, but still interceptable)
+   - Timestamp-based → MEDIUM (partially predictable)
+   - Cryptographically signed token → LOW (tamper-resistant)
+
+5. **Output assessment:**
+   - If Phase 1 returns sensitive identifiers AND Phase 2 doesn't validate ownership → flag as **Parameter Leakage + Authorization Bypass** combined risk
+   - Recommend: Phase 1 should minimize returned identifiers; Phase 2 must validate ownership regardless
+
+**Record in output_risk_list:**
+```json
+{
+  "field": "phase1_response.applyNo",
+  "risk_type": "parameter_leakage",
+  "leakage_source": "Phase 1 response body (JSON)",
+  "consumed_by": "Phase 2 confirmAccount endpoint",
+  "phase2_validates_ownership": false,
+  "combined_severity": "HIGH",
+  "recommendation": "Phase 1: sign or encrypt applyNo before returning. Phase 2: validate applyNo belongs to current user."
+}
+```
+
 ## Step 4 — Compile Output Risk List
 
 ```json
@@ -102,4 +152,5 @@ public boolean checkOrderExists(Long orderId) {
 - [ ] Each field's trust status determined by cross-referencing Layer 1 or independent backward tracing
 - [ ] Multi-source fields checked for ALL-safe condition
 - [ ] Oracle risk assessed for boolean/enum returns
+- [ ] Parameter leakage assessed for multi-stage flow endpoints (Layer 2.5)
 - [ ] `output_risk_list` populated in analysis.json

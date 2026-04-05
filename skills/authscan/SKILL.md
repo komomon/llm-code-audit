@@ -20,7 +20,7 @@ Analyze code for authorization vulnerabilities by tracing trust relationships be
 
 - [ ] **2. Phase 1: Project Reconnaissance** — read `reference/recon.md`
   - [ ] 2.1 Identify tech stack, framework, project structure
-  - [ ] 2.2 Load `reference/auth-patterns-{language}.md` + `reference/extended-knowledge.md`
+  - [ ] 2.2 Load `reference/auth-patterns-{language}.md` (java/python/nodejs) + `reference/extended-knowledge.md`
   - [ ] 2.3 `[LOOP:pattern]` Match each known auth pattern by priority order (grep/glob for keywords)
   - [ ] 2.4 `[COND]` If gaps remain after all known patterns → autonomous exploration
   - [ ] 2.5 Enumerate entry points (all endpoints for `--all`, or user-specified list)
@@ -32,16 +32,19 @@ Analyze code for authorization vulnerabilities by tracing trust relationships be
     - [ ] 3.1 **Layer 0** — Endpoint-level auth check: global auth coverage? role/permission declarations? sufficiency?
     - [ ] 3.1.5 **Layer 0.5** — Trust anchor credibility (R10): trace anchor source, check for noLogin/token-fallback/gray-toggle risks
     - [ ] 3.2 **Layer 1** — Input parameter forward trust chain:
-      - [ ] 3.2a Expand all input params to primitive types, classify by source + semantic role (identity/resource/filter/data)
+      - [ ] 3.2a Expand ALL input params to primitive types, classify by source + semantic role
+      - [ ] 3.2a-gate **`[GATE]` Parameter Completeness Check**: output a parameter table, verify count matches DTO/signature. Do NOT proceed until ALL params are classified.
       - [ ] 3.2b Identify trust anchors (verify credibility per Layer 0.5)
-      - [ ] 3.2c `[LOOP:param]` For EACH user-controlled param: trace data flow, apply R1-R10 at each usage point
-      - [ ] 3.2d `[COND]` DB results contain identity fields? → apply R9 (stored identity re-validation check)
+      - [ ] 3.2c `[LOOP:param]` For **EVERY** user-controlled param (no exceptions): trace data flow, apply R1-R10
+      - [ ] 3.2d `[MUST]` R9 check: does ANY DB/cache result contain identity fields? If yes → verify currentUserId == storedIdentity + check stored-vs-input usage
       - [ ] 3.2e `[LOOP:call]` Cross-function tracking: follow calls to datasinks (depth limit, cache conclusions)
       - [ ] 3.2f Compile parameter risk list (severity by semantic role)
+      - [ ] 3.2g `[COND]` 2+ at-risk params? → **Multi-parameter combination analysis**: how do they interact? Combined risk?
     - [ ] 3.3 **Layer 2** — Output backward trust chain (read `reference/output-analysis.md`):
       - [ ] 3.3a Expand all return fields to primitive types
       - [ ] 3.3b `[LOOP:field]` For EACH return field: trace source backward, cross-reference Layer 1 trust conclusions
       - [ ] 3.3c `[COND]` Boolean/enum returns → assess oracle risk
+      - [ ] 3.3d `[COND]` Multi-stage endpoint? → **Layer 2.5** parameter leakage assessment (Phase 1 return values as attack inputs)
     - [ ] 3.4 `[COND]` **Layer 3** — Mass assignment check (only for write operations):
       - [ ] Read `reference/mass-assignment-patterns.md`
       - [ ] Trace input fields to write datasinks, identify sensitive fields without filtering
@@ -107,6 +110,7 @@ GET /api/orders/{orderId}  →  SELECT * FROM orders WHERE id = orderId
 - `reference/trust-propagation-rules.md` — 10 core trust rules (R1-R10) with examples (MUST read during Phase 2)
 - `reference/auth-patterns-java.md` — Java auth patterns by priority (load during Phase 1 for Java projects)
 - `reference/auth-patterns-python.md` — Python auth patterns by priority (load during Phase 1 for Python projects)
+- `reference/auth-patterns-nodejs.md` — Node.js/TypeScript auth patterns by priority (load during Phase 1 for Node.js projects)
 - `reference/auth-patterns-common.md` — Cross-language auth patterns (JWT, OAuth2, RBAC, etc.)
 - `reference/datasink-patterns.md` — Data operation patterns that require authorization
 - `reference/mass-assignment-patterns.md` — Mass assignment risk patterns

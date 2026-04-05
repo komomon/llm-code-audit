@@ -154,15 +154,120 @@ Use explicit field whitelists or dedicated DTOs that exclude sensitive fields.
     "total_endpoints": 0,
     "endpoints_with_risks": 0,
     "total_findings": 0,
-    "by_severity": {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
+    "by_severity": {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0},
+    "by_type": {
+      "unauthorized_access": 0,
+      "identity_impersonation": 0,
+      "vertical_privilege_escalation": 0,
+      "bola_write": 0,
+      "bola_read": 0,
+      "mass_assignment": 0,
+      "data_leakage": 0,
+      "parameter_leakage": 0,
+      "info_oracle": 0
+    }
   },
-  "findings": [],
+  "endpoints": [
+    {
+      "endpoint": "/api/account/confirm",
+      "method": "POST",
+      "handler": {
+        "function": "AccountServiceImpl.confirmAccount",
+        "file": "src/main/java/com/example/service/AccountServiceImpl.java",
+        "line_start": 170,
+        "line_end": 214
+      },
+      "overall_severity": "CRITICAL",
+      "trust_anchors": [
+        {
+          "name": "currentUserId",
+          "source": "SecurityContext.getCurrentUserId()",
+          "file": "src/main/java/com/example/service/AccountServiceImpl.java",
+          "line": 171,
+          "credibility": "compromised",
+          "credibility_reason": "noLoginExchangeUid=true, may fallback to user input (R10)"
+        }
+      ],
+      "parameter_risks": [
+        {
+          "param": "applyNo",
+          "semantic_role": "resource",
+          "trust_status": "at_risk",
+          "trust_rule": "R8",
+          "severity": "HIGH",
+          "reason": "applyNo flows to repository.load() without trust anchor binding",
+          "flow_path": [
+            "request.getApplyNo() @ AccountServiceImpl.java:176",
+            "accountRepository.load(enterpriseId, applyNo) @ AccountRepositoryImpl.java:223",
+            "SELECT WHERE enterprise_id=? AND apply_no=? (no anchor) @ AccountRepositoryImpl.java:226"
+          ],
+          "datasink": {
+            "function": "AccountRepositoryImpl.load",
+            "file": "src/main/java/com/example/repo/AccountRepositoryImpl.java",
+            "line_start": 223,
+            "line_end": 227,
+            "op_type": "read"
+          }
+        },
+        {
+          "param": "enterpriseId",
+          "semantic_role": "identity",
+          "trust_status": "at_risk",
+          "trust_rule": "R8+R9",
+          "severity": "CRITICAL",
+          "reason": "Identity param used in query without anchor (R8). Stored value exists but code uses user input instead (R9 Check 2).",
+          "flow_path": [
+            "request.getEnterpriseId() @ AccountServiceImpl.java:175",
+            "accountRepository.load(enterpriseId, applyNo) @ AccountRepositoryImpl.java:223",
+            "account.setEnterpriseId(request.getEnterpriseId()) @ AccountServiceImpl.java:204",
+            "INSERT INTO accounts (..., enterprise_id, ...) @ AccountRepositoryImpl.java:231"
+          ],
+          "datasink": {
+            "function": "AccountRepositoryImpl.openAccount",
+            "file": "src/main/java/com/example/repo/AccountRepositoryImpl.java",
+            "line_start": 230,
+            "line_end": 234,
+            "op_type": "write"
+          }
+        }
+      ],
+      "r9_analysis": {
+        "triggered": true,
+        "stored_identity_fields": ["operatorUserId", "ipRoleId"],
+        "check1_identity_comparison": {
+          "passed": false,
+          "detail": "No code compares currentUserId with accountParam.getOperatorUserId()"
+        },
+        "check2_stored_value_usage": {
+          "passed": false,
+          "detail": "account.setEnterpriseId(request.getEnterpriseId()) uses input, not accountParam.getEnterpriseId()"
+        }
+      },
+      "combination_risks": [
+        {
+          "params": ["applyNo", "enterpriseId"],
+          "combined_severity": "CRITICAL",
+          "description": "Both params combine in repository.load() to locate any enterprise's validation record without trust anchor constraint",
+          "trust_anchor_present": false
+        },
+        {
+          "params": ["applyNo", "enterpriseId", "verifyId"],
+          "combined_severity": "CRITICAL",
+          "description": "Full attack chain: locate victim record + substitute enterprise + complete with attacker's verification",
+          "trust_anchor_present": false
+        }
+      ],
+      "output_risks": [],
+      "mass_assignment_risks": [],
+      "remediation_summary": "Add currentUserId ownership check (R9 Check 1), use stored values for business fields (R9 Check 2), add trust anchor to repository.load() query"
+    }
+  ],
   "cross_endpoint_issues": {
     "shared_vulnerable_functions": [],
     "auth_coverage_gaps": [],
     "inconsistent_patterns": []
   },
-  "endpoints": []
+  "discovered_patterns": []
 }
 ```
 
