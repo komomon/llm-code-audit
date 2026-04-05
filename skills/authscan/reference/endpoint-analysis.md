@@ -341,7 +341,15 @@ After tracing all parameters, classify each and determine severity using both tr
    - `load(enterpriseId, applyNo)` → no anchor → both params unconstrained → CRITICAL
    - `load(enterpriseId, applyNo, currentUserId)` → anchor present → combination is constrained → lower risk
 
-**Record in analysis.json** as a finding with `involved_params` listing all combined params.
+**Output to analysis.json** as `attack_scenarios` array (see Result Output Format below for the full schema):
+
+- Each scenario MUST include concrete `steps` with `attacker_action` using specific parameter names and realistic values
+- `attacker_action` describes what the attacker literally sends or does — write the actual API call, parameter value substitution, or prerequisite action (NOT generic "attacker manipulates param X")
+- For multi-phase flows: step 1 = what the legitimate user does that creates the prerequisite; subsequent steps = attacker's actual exploit actions
+- `system_behavior` must reference the actual code path, SQL, or external call that executes at each step, with `code_location` pointing to the exact file:line
+- Single-param vulnerabilities: generate 1 scenario with 1-2 steps
+- Multi-param vulnerabilities: generate a SEPARATE scenario for EACH distinct exploitation path (e.g., "Cross-enterprise hijacking" and "Identity substitution" are different scenarios with different `involved_params`)
+- **IMPORTANT:** Generate attack_scenarios during Phase 2 while source code is in context. Do NOT defer to Phase 3.
 
 ## Layer 2 — Output Parameter Backward Trust Chain
 
@@ -391,8 +399,10 @@ Each endpoint analysis produces `analysis.json`:
     "function": "OrderController.getDetail",
     "file": "src/main/java/com/example/controller/OrderController.java",
     "line_start": 45,
-    "line_end": 78
+    "line_end": 78,
+    "business_function": "Query order detail by orderId — returns full order record to caller"
   },
+  "analysis_timestamp": "2026-04-05T10:30:00Z",
   "endpoint_level_risks": [],
   "trust_anchors": [
     {
@@ -401,7 +411,8 @@ Each endpoint analysis produces `analysis.json`:
       "file": "src/main/java/com/example/controller/OrderController.java",
       "line_start": 48,
       "line_end": 48,
-      "credibility": "trusted"
+      "credibility": "trusted",
+      "credibility_reason": null
     }
   ],
   "parameter_risk_list": [
@@ -413,12 +424,40 @@ Each endpoint analysis produces `analysis.json`:
       "trust_status": "at_risk",
       "trust_rule": "R8",
       "severity": "HIGH",
-      "reason": "orderId (user input) flows to OrderDAO.findById() → SELECT WHERE id=orderId. No trust anchor (currentUserId) in query constraint. Attacker can enumerate orderId to access any user's order.",
+      "reason": "orderId (user input) flows to OrderDAO.findById() → SELECT WHERE id=orderId. No trust anchor (currentUserId) in query constraint.",
+      "exploitation": "Attacker can read any user's order by supplying an arbitrary orderId (e.g., orderId=1001 where 1001 belongs to another user)",
       "flow_path": [
-        "request.getParameter(\"orderId\") @ src/main/java/com/example/controller/OrderController.java:47",
-        "orderService.getOrder(orderId) @ src/main/java/com/example/controller/OrderController.java:52",
-        "orderDAO.findById(orderId) @ src/main/java/com/example/service/OrderService.java:30",
-        "SELECT * FROM orders WHERE id = ? @ src/main/java/com/example/dao/OrderDAO.java:12 [DATASINK, NO ANCHOR]"
+        {
+          "step": 1,
+          "description": "User input: request.getParameter(\"orderId\") — user-controlled",
+          "code": "Long orderId = Long.parseLong(request.getParameter(\"orderId\"))",
+          "file": "src/main/java/com/example/controller/OrderController.java",
+          "line": 47
+        },
+        {
+          "step": 2,
+          "description": "Passed to service without trust anchor",
+          "code": "Order order = orderService.getOrder(orderId)",
+          "file": "src/main/java/com/example/controller/OrderController.java",
+          "line": 52
+        },
+        {
+          "step": 3,
+          "description": "Reaches DAO — no anchor in call",
+          "code": "return orderDAO.findById(orderId)",
+          "file": "src/main/java/com/example/service/OrderService.java",
+          "line": 30
+        },
+        {
+          "step": 4,
+          "description": "DB query datasink — NO trust anchor in WHERE clause",
+          "code": "SELECT * FROM orders WHERE id = ?",
+          "file": "src/main/java/com/example/dao/OrderDAO.java",
+          "line": 12,
+          "is_datasink": true,
+          "datasink_type": "read",
+          "violation": "R8: No Association — currentUserId exists but absent from query"
+        }
       ],
       "affected_datasinks": [
         {
@@ -434,6 +473,32 @@ Each endpoint analysis produces `analysis.json`:
   ],
   "output_risk_list": [],
   "mass_assignment_risks": [],
+  "attack_scenarios": [
+    {
+      "title": "Horizontal privilege escalation via orderId enumeration",
+      "severity": "HIGH",
+      "involved_params": ["orderId"],
+      "steps": [
+        {
+          "step": 1,
+          "attacker_action": "Call GET /api/order/detail?orderId=1001 where 1001 belongs to another user",
+          "exploited_params": ["orderId"],
+          "system_behavior": "System executes SELECT * FROM orders WHERE id=1001, returns victim's order data without ownership check",
+          "code_location": "OrderDAO.java:12"
+        },
+        {
+          "step": 2,
+          "attacker_action": "Enumerate orderId from 1 to N to harvest all orders in the system",
+          "exploited_params": ["orderId"],
+          "system_behavior": "Each request returns order data for that orderId regardless of who owns it",
+          "code_location": "OrderController.java:52"
+        }
+      ],
+      "impact": "Attacker can read ALL users' order data including sensitive business information",
+      "root_cause": "orderId reaches datasink without trust anchor binding (R8)",
+      "multi_param_interaction": "Single parameter vulnerability — orderId alone is sufficient for exploitation"
+    }
+  ],
   "trust_chain_summary": {
     "anchors": [
       {
@@ -476,16 +541,22 @@ Each endpoint analysis produces `analysis.json`:
       "line_end": 20,
       "role": "datasink"
     }
-  ]
+  ],
+  "cross_function_cache": {}
 }
 ```
 
 **What each field provides to Phase 3 (and user verification):**
-- `reason`: Detailed enough to write attack narrative (input source → flow → datasink → why it's a risk)
-- `flow_path`: String array recording each hop with `file:line` — enables propagation chain visualization and call chain drawing without re-reading code. Only records key hops (function calls, datasinks), not every line.
-- `trust_chain_summary.propagation_tree`: Per-parameter trust status with one-line chain summary — enables trust chain tree visualization
-- `affected_datasinks`: Exact datasink locations for remediation suggestions
-- `functions_analyzed`: All code locations traversed during analysis
+- `handler.business_function`: One-sentence description of what the endpoint does in business terms — used in report 业务功能 field
+- `analysis_timestamp`: ISO timestamp — used for cache invalidation in multi-endpoint scans
+- `trust_anchors[].credibility` + `credibility_reason`: Whether the anchor is trustworthy; reason shown in report when compromised
+- `reason`: Technical chain summary (input → flow → datasink → why at risk)
+- `exploitation`: Attacker-facing one-liner describing what can be achieved — used in Risk Parameter Overview table "Risk Alone" column
+- `flow_path`: **Structured object array** — each hop has `{step, description, code, file, line}`. The `code` field at each step enables Section Key Vulnerable Code to be rendered without re-reading source. `is_datasink` + `violation` flags mark the exact problem point.
+- `trust_chain_summary.propagation_tree`: Per-parameter trust status with one-line chain — enables Trust Chain Visualization ASCII tree
+- `affected_datasinks`: Exact datasink file:line locations for remediation code
+- `functions_analyzed`: All code locations traversed — full call chain for report
+- `cross_function_cache`: Cached conclusions for functions already analyzed — prevents re-analysis when the same function appears in multiple endpoints
 
 ## Worked Example
 
@@ -614,6 +685,68 @@ Anchor: currentUserId @ line 159 [EXISTS BUT UNUSED IN DATA FLOW]
   └─✗ [HIGH] request.verifyId → completeVerification() @ line 182 (R8, side effect)
 ```
 
+**The two attack scenarios above MUST be written to `attack_scenarios` in analysis.json (generated during Phase 2 while code is in context):**
+
+```json
+"attack_scenarios": [
+  {
+    "title": "Cross-Enterprise Order Hijacking",
+    "severity": "CRITICAL",
+    "involved_params": ["orderNo", "enterpriseId", "verifyId"],
+    "steps": [
+      {
+        "step": 1,
+        "attacker_action": "Enterprise A user creates order normally (Phase 1), producing orderNo_A and enterpriseId_A stored in DB",
+        "exploited_params": [],
+        "system_behavior": "System stores orderNo_A, enterpriseId_A, operatorUserId_A in order_validate table",
+        "code_location": "OrderService.java:128-143"
+      },
+      {
+        "step": 2,
+        "attacker_action": "Attacker obtains orderNo_A via interception, log leakage, or enumeration",
+        "exploited_params": [],
+        "system_behavior": "No system involvement — attacker acquires the prerequisite value",
+        "code_location": "—"
+      },
+      {
+        "step": 3,
+        "attacker_action": "Attacker calls confirmOrder with orderNo=orderNo_A, enterpriseId=enterpriseId_A, verifyId=attacker_own_verifyId",
+        "exploited_params": ["orderNo", "enterpriseId", "verifyId"],
+        "system_behavior": "System loads Enterprise A's order record (line 163), completes verification using attacker's verifyId (line 182), writes order under Enterprise A's identity",
+        "code_location": "OrderRepository.java:load (line 163), OrderRepository.java:confirmOrder (line 198)"
+      }
+    ],
+    "impact": "Attacker confirms Enterprise A's order using their own verification credential — order is recorded as if Enterprise A's operator performed it",
+    "root_cause": "orderNo + enterpriseId query has no trust anchor (R8); operatorUserId from stored record not compared with currentUserId (R9 Check 1)",
+    "multi_param_interaction": "orderNo locates the target record; enterpriseId identifies the target enterprise; verifyId substitutes attacker's credential for the victim's — all three combine to complete the attack chain"
+  },
+  {
+    "title": "Enterprise Identity Substitution via enterpriseId Override",
+    "severity": "CRITICAL",
+    "involved_params": ["enterpriseId"],
+    "steps": [
+      {
+        "step": 1,
+        "attacker_action": "Attacker creates their own order in Phase 1 (orderNo_X, enterpriseId_B stored)",
+        "exploited_params": [],
+        "system_behavior": "System stores attacker's own record normally",
+        "code_location": "OrderService.java:128-143"
+      },
+      {
+        "step": 2,
+        "attacker_action": "Attacker calls confirmOrder with orderNo=orderNo_X (own order), enterpriseId=enterpriseId_C (different enterprise)",
+        "exploited_params": ["enterpriseId"],
+        "system_behavior": "System loads attacker's own order (orderNo_X), then writes final order with enterpriseId_C (from user input at line 193) instead of stored enterpriseId_B",
+        "code_location": "OrderService.java:193 (account.setEnterpriseId(request.getEnterpriseId()))"
+      }
+    ],
+    "impact": "Order confirmed under wrong enterprise (enterpriseId_C) — attacker can associate their order with any enterprise in the system",
+    "root_cause": "R9 Check 2 violation: code uses request.getEnterpriseId() (user input) instead of orderParam.getEnterpriseId() (stored value)",
+    "multi_param_interaction": "Single param exploitation path — only enterpriseId needs to be substituted; orderNo can be attacker's own"
+  }
+]
+```
+
 ## Worked Example 3: Python Django DRF — BOLA + Data Leakage
 
 This example shows how to analyze a Python endpoint using Django REST Framework.
@@ -706,4 +839,335 @@ order = Order.objects.get(id=order_id)
 # To:
 order = get_object_or_404(Order, id=order_id, user=request.user)
 # This adds trust anchor to the query → R1: Direct Association → trusted
+```
+
+---
+
+## Worked Example 4: Vertical Privilege Escalation (Java Spring — BFLA + BOLA)
+
+This example shows how to analyze **vertical privilege escalation** at Layer 0, and how it combines with horizontal BOLA at Layer 1.
+
+```java
+// UserAdminController.java
+@RestController
+@RequestMapping("/api/admin/users")
+@PreAuthorize("isAuthenticated()")          // line 8: only login check — no role guard!
+public class UserAdminController {
+
+    @DeleteMapping("/{userId}")              // DELETE /api/admin/users/{userId}
+    public Result deleteUser(
+            @PathVariable Long userId,       // line 13: user-controlled
+            HttpServletRequest request) {
+        Long operatorId = SecurityUtils.getCurrentUserId(request);  // line 15: trust anchor
+        userService.deleteUser(userId);      // line 16: no ownership check, no role check
+        return Result.ok();
+    }
+
+    @PutMapping("/{userId}/role")            // PUT /api/admin/users/{userId}/role
+    public Result updateUserRole(
+            @PathVariable Long userId,       // line 21: user-controlled
+            @RequestParam String newRole,    // line 22: user-controlled — can set ADMIN!
+            HttpServletRequest request) {
+        Long operatorId = SecurityUtils.getCurrentUserId(request);  // line 24: trust anchor
+        userService.updateRole(userId, newRole);  // line 25: no permission boundary
+        return Result.ok();
+    }
+
+    @GetMapping                              // GET /api/admin/users
+    public Result listUsers(
+            @RequestParam(required = false) String department,  // line 30
+            @RequestParam(required = false) String role) {      // line 31
+        return Result.ok(userService.findAll(department, role)); // line 32: returns all users
+    }
+}
+```
+
+**Analysis walkthrough:**
+
+**Layer 0 — Endpoint-level auth check (KEY for this example):**
+
+- Global auth: Spring Security filter covers all `/api/**` paths → login required ✅
+- Endpoint-level annotation: `@PreAuthorize("isAuthenticated()")` @ line 8
+- **Auth sufficiency check:**
+  - Path: `/api/admin/users` — "admin" in path signals elevated privilege
+  - Operations: `deleteUser` (destructive), `updateUserRole` (privilege assignment), `listUsers` (bulk PII access)
+  - LLM semantic judgment: all three operations are admin-only by nature
+  - `isAuthenticated()` = "is any logged-in user" — insufficient for admin operations
+  - **→ HIGH: Vertical Privilege Escalation (BFLA) — any authenticated user can access admin functions**
+
+**Layer 0.5 — Trust anchor credibility:**
+
+- `SecurityUtils.getCurrentUserId(request)` → traces to session attribute set during login
+- No noLogin annotation, no token fallback → **✅ Credibility: TRUSTED**
+
+**Layer 1 — Parameter analysis:**
+
+**Parameter table:**
+
+| # | Parameter | Source | Semantic Role | Risk Base | Classified? |
+|---|-----------|--------|---------------|-----------|-------------|
+| 1 | `userId` (deleteUser) | URL path | Identity | HIGH | ✅ |
+| 2 | `userId` (updateUserRole) | URL path | Identity | HIGH | ✅ |
+| 3 | `newRole` | Query param | Data (privilege assignment) | HIGH | ✅ |
+| 4 | `department` | Query param | Filter | LOW | ✅ |
+| 5 | `role` (listUsers) | Query param | Filter | LOW | ✅ |
+
+Count: 5 params. ✅ Complete.
+
+**`userId` in deleteUser (semantic_role: identity):**
+- Used in `userService.deleteUser(userId)` @ line 16 → write datasink
+- `operatorId` (trust anchor) declared @ line 15 but **never used in the call**
+- R8: No Association → **at_risk**
+- Severity: Identity + write = **CRITICAL** (any user can delete any user)
+
+**`userId` in updateUserRole (semantic_role: identity):**
+- Used in `userService.updateRole(userId, newRole)` @ line 25 → write datasink
+- `operatorId` declared @ line 24 but **never used**
+- R8: No Association → **at_risk**
+- Severity: Identity + write + role assignment = **CRITICAL**
+
+**`newRole` (semantic_role: data — privilege value):**
+- Reaches `userService.updateRole(userId, newRole)` @ line 25 → write datasink
+- No whitelist / permission boundary check before setting the role
+- **→ at_risk**: attacker can set `newRole=ADMIN` to escalate any user's privilege
+- Severity: Privilege escalation = **CRITICAL**
+
+**`department`, `role` (filter params):**
+- Used in `userService.findAll(department, role)` @ line 32 → read datasink
+- No anchor constraint → **at_risk (MEDIUM)**: can enumerate all users by any filter value
+
+**Combined findings:**
+
+There are **two independent vulnerability classes**:
+1. **BFLA (Layer 0):** Any authenticated user can call all admin endpoints
+2. **BOLA (Layer 1):** Even if BFLA were fixed (role guard added), `userId` in deleteUser/updateUserRole would still need an ownership or scope check
+
+The Layer 0 finding does NOT stop Layer 1 analysis — both must be reported independently.
+
+**Attack Scenarios:**
+
+**Scenario 1: Privilege Escalation (BFLA + newRole)**
+| Step | Attacker Action | Exploited Params | System Behavior | Code Location |
+|------|----------------|-----------------|-----------------|---------------|
+| 1 | Any logged-in user sends `PUT /api/admin/users/999/role?newRole=ADMIN` | `userId=999`, `newRole=ADMIN` | Calls `userService.updateRole(999, "ADMIN")` with no role boundary check | UserAdminController.java:25 |
+| **Result** | **Attacker elevates any user (including themselves, userId=own id) to ADMIN** | | | |
+
+**Scenario 2: Unauthorized User Deletion (BFLA + BOLA)**
+| Step | Attacker Action | Exploited Params | System Behavior | Code Location |
+|------|----------------|-----------------|-----------------|---------------|
+| 1 | Any logged-in user sends `DELETE /api/admin/users/100` | `userId=100` | Calls `userService.deleteUser(100)` with no identity or role check | UserAdminController.java:16 |
+| **Result** | **Attacker deletes any user's account — both BFLA (should require ADMIN role) and BOLA (no ownership) violated** | | | |
+
+**Trust Chain Visualization:**
+```
+Layer 0: @PreAuthorize("isAuthenticated()") @ line 8
+  ✗ INSUFFICIENT for admin operations — ANY authenticated user can call these endpoints
+  → HIGH: Vertical Privilege Escalation (BFLA)
+
+Trust Anchor: operatorId @ SecurityUtils.getCurrentUserId() [EXISTS BUT NEVER USED]
+  │
+  ├─✗ [CRITICAL] userId (deleteUser, identity)
+  │     → userService.deleteUser(userId) @ line 16
+  │     ✗ R8: No trust anchor binding — any userId can be deleted
+  │
+  ├─✗ [CRITICAL] userId (updateUserRole, identity) + newRole
+  │     → userService.updateRole(userId, newRole) @ line 25
+  │     ✗ R8: No trust anchor binding
+  │     ✗ newRole unconstrained — attacker can set "ADMIN"
+  │
+  └─✗ [MEDIUM] department, role (filter)
+        → userService.findAll(department, role) @ line 32
+        ✗ R8: No anchor — returns all users matching any filter
+```
+
+**`attack_scenarios` for analysis.json:**
+```json
+"attack_scenarios": [
+  {
+    "title": "Privilege Escalation via Unauthenticated Admin Endpoint (BFLA)",
+    "severity": "CRITICAL",
+    "involved_params": ["userId", "newRole"],
+    "steps": [
+      {
+        "step": 1,
+        "attacker_action": "Any logged-in user sends PUT /api/admin/users/{own_userId}/role?newRole=ADMIN",
+        "exploited_params": ["userId", "newRole"],
+        "system_behavior": "userService.updateRole(userId, 'ADMIN') executes with no role boundary — attacker's account becomes ADMIN",
+        "code_location": "UserAdminController.java:25"
+      }
+    ],
+    "impact": "Any authenticated user can escalate themselves or others to ADMIN role",
+    "root_cause": "Layer 0 BFLA: @PreAuthorize('isAuthenticated()') used on admin controller instead of role-based guard (e.g., hasRole('ADMIN')). Layer 1 BOLA: userId and newRole reach write datasink without trust anchor binding (R8).",
+    "multi_param_interaction": "userId selects the target account; newRole specifies the privilege level — together they enable complete privilege assignment without any authorization check"
+  }
+]
+```
+
+**Fix:**
+```java
+// Fix 1 — Add role guard at class level (addresses BFLA):
+@PreAuthorize("hasRole('ADMIN')")          // replaces isAuthenticated()
+public class UserAdminController { ... }
+
+// Fix 2 — Add trust anchor binding for destructive operations (addresses BOLA):
+@DeleteMapping("/{userId}")
+public Result deleteUser(@PathVariable Long userId, HttpServletRequest request) {
+    Long operatorId = SecurityUtils.getCurrentUserId(request);
+    // Verify operator has permission to delete this specific user
+    // (e.g., can only delete users in own department, or require super-admin for cross-dept)
+    userService.deleteUserWithAudit(userId, operatorId);
+    return Result.ok();
+}
+
+// Fix 3 — Whitelist allowed role values (addresses newRole escalation):
+private static final Set<String> ALLOWED_ROLES = Set.of("USER", "OPERATOR", "MANAGER");
+// Before updateRole: validate newRole is in ALLOWED_ROLES (exclude "ADMIN" for self-service)
+```
+
+---
+
+## Worked Example 5: Node.js Express + JWT — Simple BOLA
+
+This example shows how to identify the trust anchor in a JWT-based Node.js/Express endpoint and trace a simple BOLA vulnerability with data leakage.
+
+```javascript
+// middleware/auth.js
+const jwt = require('jsonwebtoken');
+
+module.exports = function authMiddleware(req, res, next) {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) return res.status(401).json({ error: 'Unauthorized' });
+    const decoded = jwt.verify(token, process.env.JWT_SECRET); // line 7: signature verified
+    req.user = decoded;  // line 8: { id, email, role } — set by verified JWT
+    next();
+};
+```
+
+```javascript
+// routes/orders.js
+const router = require('express').Router();
+const authMiddleware = require('../middleware/auth');
+const Order = require('../models/Order');
+const OrderItem = require('../models/OrderItem');
+
+// GET /api/orders/:orderId
+router.get('/:orderId', authMiddleware, async (req, res) => {
+    const orderId = req.params.orderId;               // line 9: user-controlled (URL path)
+    const currentUserId = req.user.id;               // line 10: trust anchor from JWT
+
+    const order = await Order.findOne({ _id: orderId });         // line 12: NO userId scope!
+    if (!order) return res.status(404).json({ error: 'Not found' });
+
+    const items = await OrderItem.find({ orderId: orderId });    // line 15: derived from untrusted
+
+    return res.json({
+        orderId: order._id,
+        amount: order.amount,
+        status: order.status,
+        recipientName: order.recipientName,   // line 20: victim's PII
+        recipientPhone: order.recipientPhone, // line 21: victim's PII
+        items
+    });
+});
+```
+
+**Analysis walkthrough:**
+
+**Layer 0:**
+- `authMiddleware` applied to the route → login required ✅
+- No role annotation — `GET /api/orders/:orderId` is a standard user operation, login-only is adequate
+- Layer 0: **Pass**
+
+**Layer 0.5 — Trust anchor credibility:**
+- `req.user.id` set from `jwt.verify(token, JWT_SECRET)` @ middleware line 7
+- `jwt.verify()` throws if signature invalid → token cannot be forged
+- No fallback path (no `|| req.body.userId` style override)
+- **✅ Credibility: TRUSTED**
+
+**Layer 1 — Parameter analysis:**
+
+**Parameter table:**
+
+| # | Parameter | Source | Semantic Role | Risk Base | Classified? |
+|---|-----------|--------|---------------|-----------|-------------|
+| 1 | `orderId` | URL path `/:orderId` | Resource | MEDIUM | ✅ |
+
+Count: 1 URL path param. ✅ Complete.
+
+**`orderId` (semantic_role: resource):**
+- Used in `Order.findOne({ _id: orderId })` @ line 12
+- Query filter: `{ _id: orderId }` — **no `userId` field in filter**
+- `currentUserId` declared @ line 10 but **absent from the query**
+- R8: No Association → **at_risk**
+- Severity: Resource + read = **MEDIUM**
+
+**`items` (derived from untrusted `orderId`):**
+- `OrderItem.find({ orderId: orderId })` @ line 15
+- `orderId` is at_risk → this query is also untrusted (not R3 — source itself is untrusted)
+- **at_risk**: attacker-controlled orderId fetches another user's order items
+
+**Layer 2 — Output analysis:**
+
+| Return Field | Source | Trust Status |
+|-------------|--------|-------------|
+| `orderId`, `amount`, `status` | `Order.findOne({ _id: orderId })` — untrusted | AT RISK |
+| `recipientName`, `recipientPhone` | same untrusted order | **AT RISK — PII leakage** |
+| `items` | `OrderItem.find({ orderId })` — derived from untrusted | AT RISK |
+
+**`recipientName` / `recipientPhone`** — victim's personal contact information returned to attacker. This elevates the severity from MEDIUM to **HIGH** due to PII exposure.
+
+**Trust Chain Visualization:**
+```
+Anchor: currentUserId = req.user.id @ routes/orders.js:10 [JWT-verified, TRUSTED]
+  │
+  └─✗ [MEDIUM→HIGH] orderId (URL path, resource)
+        → Order.findOne({ _id: orderId }) @ routes/orders.js:12
+        ✗ R8: No Association — currentUserId absent from MongoDB filter
+        │
+        ├─→ order.recipientName, order.recipientPhone [PII of order owner] → returned @ line 20-21
+        │   ✗ Data leakage: victim's contact info exposed to attacker
+        │
+        └─→ OrderItem.find({ orderId }) @ line 15
+            ✗ Derived from untrusted orderId — attacker sees victim's order items
+```
+
+**`attack_scenarios` for analysis.json:**
+```json
+"attack_scenarios": [
+  {
+    "title": "Order Data and PII Access via orderId Enumeration",
+    "severity": "HIGH",
+    "involved_params": ["orderId"],
+    "steps": [
+      {
+        "step": 1,
+        "attacker_action": "Attacker sends GET /api/orders/507f1f77bcf86cd799439011 where the ObjectId belongs to another user's order",
+        "exploited_params": ["orderId"],
+        "system_behavior": "Order.findOne({ _id: '507f1f77bcf86cd799439011' }) returns victim's order including recipientName and recipientPhone",
+        "code_location": "routes/orders.js:12"
+      },
+      {
+        "step": 2,
+        "attacker_action": "Attacker iterates ObjectIds (or guesses from leaked values) to harvest multiple victims' order data",
+        "exploited_params": ["orderId"],
+        "system_behavior": "Each request returns full order details + PII of the order owner — no rate limiting or ownership check",
+        "code_location": "routes/orders.js:12-21"
+      }
+    ],
+    "impact": "Attacker can read any user's order details, order items, recipient name and phone number — PII exposure at scale",
+    "root_cause": "orderId reaches MongoDB findOne() without userId binding (R8). currentUserId exists at line 10 but is not included in the query filter.",
+    "multi_param_interaction": "Single parameter vulnerability — orderId alone is sufficient for exploitation"
+  }
+]
+```
+
+**Fix:**
+```javascript
+// Change line 12 from:
+const order = await Order.findOne({ _id: orderId });
+
+// To (bind query to trust anchor):
+const order = await Order.findOne({ _id: orderId, userId: currentUserId });
+// R1: Direct Association — orderId now constrained by trust anchor
+// If order doesn't belong to currentUserId, findOne returns null → 404
 ```

@@ -162,5 +162,5 @@ Reconnaissance is complete when:
 - [ ] All auth layers analyzed (global → endpoint → in-function)
 - [ ] Trust anchor sources identified with their obtaining methods
 - [ ] Entry points enumerated (all or user-specified)
-- [ ] `recon_context.md` written to results directory
-- [ ] Newly discovered patterns (if any) recorded in recon_context.md for later user review
+- [ ] `{output_dir}/recon_context.md` written to disk
+- [ ] Newly discovered patterns (if any) recorded in `{output_dir}/recon_context.md` for later user review

@@ -17,6 +17,7 @@ Analyze code for authorization vulnerabilities by tracing trust relationships be
   - `--recon` → Phase 1 only, stop after step 2
   - `--all` → Phase 1 + Phase 2 for ALL discovered endpoints + Phase 3
   - Specific endpoint(s) → Phase 1 (if recon_context.md missing) + Phase 2 for specified endpoint(s) + Phase 3
+  - **Determine output directory NOW**: `results/time_{project_name}/` — time = current time in yyyyMMddHHmm (e.g., `results/202604041101_myproject/`). All Phase 1/2/3 output files go here.
 
 - [ ] **2. Phase 1: Project Reconnaissance** — read `reference/recon.md`
   - [ ] 2.1 Identify tech stack, framework, project structure
@@ -24,7 +25,7 @@ Analyze code for authorization vulnerabilities by tracing trust relationships be
   - [ ] 2.3 `[LOOP:pattern]` Match each known auth pattern by priority order (grep/glob for keywords)
   - [ ] 2.4 `[COND]` If gaps remain after all known patterns → autonomous exploration
   - [ ] 2.5 Enumerate entry points (all endpoints for `--all`, or user-specified list)
-  - [ ] 2.6 Generate `recon_context.md` (record discovered patterns here for later user review)
+  - [ ] 2.6 Write `{output_dir}/recon_context.md` (record discovered patterns here for later user review)
 
 - [ ] **3. Phase 2: Per-Endpoint Deep Analysis** — read `reference/endpoint-analysis.md`
   - [ ] 3.0 Load `reference/trust-propagation-rules.md` + `reference/datasink-patterns.md` + `reference/extended-knowledge.md`
@@ -48,18 +49,18 @@ Analyze code for authorization vulnerabilities by tracing trust relationships be
     - [ ] 3.4 `[COND]` **Layer 3** — Mass assignment check (only for write operations):
       - [ ] Read `reference/mass-assignment-patterns.md`
       - [ ] Trace input fields to write datasinks, identify sensitive fields without filtering
-    - [ ] 3.5 Generate concise `analysis.json` — conclusions only (param + rule + severity + code location)
+    - [ ] 3.5 Write `{output_dir}/{endpoint_slug}/analysis.json` — conclusions only (param + rule + severity + code location)
     - [ ] 3.6 **Loop check:** more endpoints remaining? → return to 3.1 for next endpoint
 
 - [ ] **4. Phase 3: Report & Self-Learning** — read `reference/report.md`
   - [ ] 4.1 Aggregate all endpoint analysis.json results
   - [ ] 4.2 Cross-endpoint correlation (shared vulnerable functions, auth gaps, inconsistencies)
   - [ ] 4.3 Risk prioritization (CRITICAL → HIGH → MEDIUM → LOW → INFO)
-  - [ ] 4.4 Generate three report files:
-    - [ ] `report.md` — technical report (data flow traces, code snippets, trust chain tree, before/after fixes)
-    - [ ] `report.json` — machine-readable structured data
-    - [ ] `report-summary.md` — easy-read summary for non-code-audit security team (business language, attack path diagrams, parameter risk table, remediation in business terms)
-  - [ ] 4.5 `[COND]` If new patterns discovered → list in report for user review (do NOT auto-write to any file)
+  - [ ] 4.4 Use the output directory established in step 1. Create it if it does not exist.
+  - [ ] 4.5 Read `reference/report-summary-template.md`, then write two report files to the output directory using the Write tool:
+    - [ ] Write `{output_dir}/report-summary.md` — comprehensive 9-module report (use `reference/report-summary-template.md` as template)
+    - [ ] Write `{output_dir}/report.json` — machine-readable structured data (use schema in `reference/report.md` Step 4)
+  - [ ] 4.6 `[COND]` If new patterns discovered → list in report-summary.md for user review (do NOT auto-write to any file)
 
 ## Invocation
 
@@ -107,7 +108,8 @@ GET /api/orders/{orderId}  →  SELECT * FROM orders WHERE id = orderId
 - `reference/recon.md` — Phase 1 detailed methodology
 - `reference/endpoint-analysis.md` — Phase 2 detailed methodology (Layer 0-3)
 - `reference/output-analysis.md` — Phase 2 Layer 2 detailed methodology
-- `reference/report.md` — Phase 3 detailed methodology
+- `reference/report.md` — Phase 3 execution methodology + report.json schema
+- `reference/report-summary-template.md` — report-summary.md Chinese comprehensive report template (9 modules, load in step 4.5)
 
 **Knowledge Base (prioritized pattern matching — check these FIRST before autonomous exploration):**
 - `reference/trust-propagation-rules.md` — 10 core trust rules (R1-R10) with examples (MUST read during Phase 2)
