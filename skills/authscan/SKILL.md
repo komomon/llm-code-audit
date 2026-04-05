@@ -55,7 +55,10 @@ Analyze code for authorization vulnerabilities by tracing trust relationships be
   - [ ] 4.1 Aggregate all endpoint analysis.json results
   - [ ] 4.2 Cross-endpoint correlation (shared vulnerable functions, auth gaps, inconsistencies)
   - [ ] 4.3 Risk prioritization (CRITICAL → HIGH → MEDIUM → LOW → INFO)
-  - [ ] 4.4 Generate `report.md` + `report.json` — transform analysis conclusions into user-facing report (all affected params, combined attack scenario, trust chain, remediation per endpoint)
+  - [ ] 4.4 Generate three report files:
+    - [ ] `report.md` — technical report (data flow traces, code snippets, trust chain tree, before/after fixes)
+    - [ ] `report.json` — machine-readable structured data
+    - [ ] `report-summary.md` — easy-read summary for non-code-audit security team (business language, attack path diagrams, parameter risk table, remediation in business terms)
   - [ ] 4.5 `[COND]` If new patterns discovered → list in report for user review (do NOT auto-write to any file)
 
 ## Invocation
