@@ -30,12 +30,14 @@ Analyze code for authorization vulnerabilities by tracing trust relationships be
   - [ ] 3.0 Load `reference/trust-propagation-rules.md` + `reference/datasink-patterns.md` + `reference/extended-knowledge.md`
   - **`[LOOP:endpoint]` Repeat steps 3.1–3.6 for EACH target endpoint:**
     - [ ] 3.1 **Layer 0** — Endpoint-level auth check: global auth coverage? role/permission declarations? sufficiency?
+    - [ ] 3.1.5 **Layer 0.5** — Trust anchor credibility (R10): trace anchor source, check for noLogin/token-fallback/gray-toggle risks
     - [ ] 3.2 **Layer 1** — Input parameter forward trust chain:
-      - [ ] 3.2a Expand all input params to primitive types, classify (user-controlled vs auth-injected)
-      - [ ] 3.2b Identify trust anchors in function body
-      - [ ] 3.2c `[LOOP:param]` For EACH user-controlled param: trace data flow, apply R1-R8 at each usage point
-      - [ ] 3.2d `[LOOP:call]` Cross-function tracking: follow calls to datasinks (depth limit, cache conclusions)
-      - [ ] 3.2e Compile parameter risk list
+      - [ ] 3.2a Expand all input params to primitive types, classify by source + semantic role (identity/resource/filter/data)
+      - [ ] 3.2b Identify trust anchors (verify credibility per Layer 0.5)
+      - [ ] 3.2c `[LOOP:param]` For EACH user-controlled param: trace data flow, apply R1-R10 at each usage point
+      - [ ] 3.2d `[COND]` DB results contain identity fields? → apply R9 (stored identity re-validation check)
+      - [ ] 3.2e `[LOOP:call]` Cross-function tracking: follow calls to datasinks (depth limit, cache conclusions)
+      - [ ] 3.2f Compile parameter risk list (severity by semantic role)
     - [ ] 3.3 **Layer 2** — Output backward trust chain (read `reference/output-analysis.md`):
       - [ ] 3.3a Expand all return fields to primitive types
       - [ ] 3.3b `[LOOP:field]` For EACH return field: trace source backward, cross-reference Layer 1 trust conclusions
@@ -43,14 +45,17 @@ Analyze code for authorization vulnerabilities by tracing trust relationships be
     - [ ] 3.4 `[COND]` **Layer 3** — Mass assignment check (only for write operations):
       - [ ] Read `reference/mass-assignment-patterns.md`
       - [ ] Trace input fields to write datasinks, identify sensitive fields without filtering
-    - [ ] 3.5 Generate `analysis.json` for this endpoint
+    - [ ] 3.5 Generate `analysis.json` for this endpoint, including:
+      - [ ] Per-parameter risk cards with full propagation chains (code file + line at each step)
+      - [ ] `[COND]` Multiple at-risk params? → Generate combined attack scenarios showing how params interact
+      - [ ] Trust chain visualization (text-based tree showing anchor → trusted → at_risk paths)
     - [ ] 3.6 **Loop check:** more endpoints remaining? → return to 3.1 for next endpoint
 
 - [ ] **4. Phase 3: Report & Self-Learning** — read `reference/report.md`
   - [ ] 4.1 Aggregate all endpoint analysis.json results
   - [ ] 4.2 Cross-endpoint correlation (shared vulnerable functions, auth gaps, inconsistencies)
   - [ ] 4.3 Risk prioritization (CRITICAL → HIGH → MEDIUM → LOW → INFO)
-  - [ ] 4.4 Generate `report.md` + `report.json`
+  - [ ] 4.4 Generate `report.md` (per-endpoint: all affected params + propagation chains + combined attack scenarios + trust chain visualization + specific remediation code) + `report.json`
   - [ ] 4.5 `[COND]` If new patterns discovered → list in report for user review (do NOT auto-write to any file)
 
 ## Invocation
@@ -102,7 +107,7 @@ GET /api/orders/{orderId}  →  SELECT * FROM orders WHERE id = orderId
 - `reference/report.md` — Phase 3 detailed methodology
 
 **Knowledge Base (prioritized pattern matching — check these FIRST before autonomous exploration):**
-- `reference/trust-propagation-rules.md` — 8 core trust rules with examples (MUST read during Phase 2)
+- `reference/trust-propagation-rules.md` — 10 core trust rules (R1-R10) with examples (MUST read during Phase 2)
 - `reference/auth-patterns-java.md` — Java auth patterns by priority (load during Phase 1 for Java projects)
 - `reference/auth-patterns-python.md` — Python auth patterns by priority (load during Phase 1 for Python projects)
 - `reference/auth-patterns-common.md` — Cross-language auth patterns (JWT, OAuth2, RBAC, etc.)

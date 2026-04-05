@@ -4,7 +4,7 @@
 
 **Prerequisites:** Load `recon_context.md` into context before starting.
 
-**MUST READ:** Load `trust-propagation-rules.md` (in this same reference directory) — the 8 trust rules are the foundation of all judgments in this phase.
+**MUST READ:** Load `trust-propagation-rules.md` (in this same reference directory) — the 10 trust rules (R1-R10) are the foundation of all judgments in this phase.
 
 **Also load:** `extended-knowledge.md` for any user-confirmed patterns from previous analyses.
 
@@ -51,6 +51,45 @@ This principle ensures the analysis catches real BOLA vulnerabilities where the 
    - Use LLM semantic understanding to judge: does the function name, comments, or behavior suggest elevated privileges are needed?
 
 **Output:** `endpoint_level_risks` array in result JSON.
+
+## Layer 0.5 — Trust Anchor Credibility Analysis
+
+**Goal:** Before relying on trust anchors for the entire analysis, verify that the anchors themselves are genuinely uncontrollable by the user. If an anchor is compromised, ALL trust conclusions based on it are invalid (Rule R10).
+
+**Steps:**
+
+1. **Identify how each trust anchor is obtained:**
+   - Read the anchor's getter/acquisition code (e.g., `SecurityContext.getCurrentUserId()` implementation)
+   - Trace: where does the value ACTUALLY come from at runtime?
+
+2. **Check for credibility-reducing patterns:**
+
+   | Pattern | Risk | Search Keywords |
+   |---------|------|-----------------|
+   | No-login annotation | Anchor may not exist | `noLoginExchangeUid`, `permitAll`, `@Anonymous`, `@PermitAll` |
+   | Token fallback to user input | Anchor becomes user-controlled | `defaultIfEmpty`, `orElse(request.get`, `if (uid == null) uid = request.` |
+   | Gray toggle controlling auth strictness | Toggle off → weaker auth path | `grayToggle`, `featureFlag`, `isHit`, `isEnabled` + auth-related toggle names |
+   | Multiple auth sources with fallback chain | Weakest source determines credibility | Chained `if/else` blocks for uid resolution |
+
+3. **Assess each anchor source:**
+
+   | Source Type | Credibility |
+   |-------------|-------------|
+   | Server-side session attribute | ✅ Trusted |
+   | JWT/Token claim (signature verified) | ✅ Trusted |
+   | Framework auth injection (`@AuthenticationPrincipal`) | ✅ Trusted |
+   | RPC framework context (with login state) | ✅ Trusted |
+   | Internal gateway header (gateway strips client headers) | ✅ Trusted |
+   | Token verification FAILED + fallback to request param | ❌ **Not trusted** |
+   | Gray toggle OFF + weaker auth path | ⚠️ **Conditionally not trusted** |
+   | Request header/param directly (no validation) | ❌ **Not trusted** |
+
+4. **If any anchor is potentially user-controlled:**
+   - Mark as **CRITICAL: Trust Anchor Compromised (R10)**
+   - Note: all subsequent R1-R4 conclusions using this anchor are invalidated
+   - The endpoint effectively has no reliable auth even if it "looks" like it does
+
+**Output:** Add to `endpoint_level_risks` if compromised anchors found.
 
 ## Layer 1 — Input Parameter Forward Trust Chain (Core)
 
@@ -110,11 +149,13 @@ This is the primary analysis. Trace every user-controlled input parameter throug
 ### Step 2: Trust Anchor Identification
 
 1. Load trust anchor sources from `recon_context.md`
-2. Search the function body for anchor usage:
+2. **First apply Layer 0.5** — verify anchor credibility before proceeding (see above)
+3. Search the function body for anchor usage:
    - Direct: `session.getUserId()`, `SecurityContextHolder.getContext()`, `request.user.id`
    - Injected: `@AuthenticationPrincipal User user` → `user.getId()`
    - SDK/Internal: custom auth utility calls identified in recon
-3. Mark each anchor variable and its assignment location
+4. Mark each anchor variable and its assignment location
+5. If Layer 0.5 flagged any anchor as compromised → note that all trust conclusions using it are unreliable
 
 **Record:**
 ```json
@@ -184,6 +225,35 @@ DELETE FROM table WHERE id=a3;  // WRITE already executed
 // ... later a3 gets validated against session
 ```
 The DELETE cannot be undone. Mark as **Risk Pending** — the write happened before auth validation.
+
+**Critical: Stored Identity Re-validation (Rule R9)**
+
+When a DB/cache query returns data containing **identity fields** (operatorUserId, createdBy, ownerId), apply R9:
+
+```java
+ValidateMO mo = repo.findByOrderNo(orderNo);           // query (trusted or not)
+OrderParam param = JSON.parse(mo.getSavedParam());
+
+// R9 CHECK: does code compare stored identity with current user?
+if (!currentUserId.equals(param.getOperatorUserId())) { // ← R9 satisfied ✅
+    throw new AccessDeniedException();
+}
+// Without this check → R9 violated → CRITICAL: Identity Impersonation
+
+// Also check: does the code use stored values or user input for business ops?
+order.setEnterpriseId(param.getEnterpriseId());         // ✅ stored value
+order.setEnterpriseId(request.getEnterpriseId());       // ❌ user input (R8 risk)
+```
+
+**R9 detection checklist for DB results (TWO mandatory checks):**
+- [ ] **Check 1 (Identity):** Does the result contain identity fields (userId, operatorId, ownerId, createdBy)?
+  - [ ] If yes: are those identity fields compared with the current user's trust anchor (`currentUserId == storedIdentity`)?
+  - [ ] If no comparison → **CRITICAL: Identity Impersonation**
+- [ ] **Check 2 (Stored vs Input):** For each field that exists BOTH in user input AND in stored data (same semantic meaning):
+  - [ ] Does the business operation use the stored value or the user's input?
+  - [ ] If user input is used when stored value exists → **HIGH: Parameter Substitution Risk**
+  - [ ] Example: `order.setEnterpriseId(request.getEnterpriseId())` when `orderParam.getEnterpriseId()` is available
+- [ ] **Redundant parameter flag:** Does the endpoint accept a parameter that duplicates a stored field? (design smell — flag for review)
 
 ### Step 4: Cross-Function Tracking
 
@@ -301,10 +371,34 @@ Each endpoint analysis produces `analysis.json`:
     {
       "param": "orderId",
       "type": "user_controlled",
+      "semantic_role": "resource",
       "expanded_from": "RequestParam orderId (Long)",
       "trust_status": "at_risk",
       "trust_rule": "R8",
       "reason": "orderId used in SELECT ... WHERE id=orderId without session binding",
+      "risk_propagation_chain": [
+        {
+          "step": 1,
+          "description": "User input: request.orderId (user-controlled)",
+          "code": "Long orderId = request.getParameter(\"orderId\")",
+          "file": "src/main/java/com/example/controller/OrderController.java",
+          "line": 47
+        },
+        {
+          "step": 2,
+          "description": "Passed to DAO method without trust anchor",
+          "code": "Order order = orderDAO.findById(orderId)",
+          "file": "src/main/java/com/example/controller/OrderController.java",
+          "line": 52
+        },
+        {
+          "step": 3,
+          "description": "Reaches DB query datasink — NO anchor in WHERE clause",
+          "code": "SELECT * FROM orders WHERE id = ?",
+          "file": "src/main/java/com/example/dao/OrderDAO.java",
+          "line": 12
+        }
+      ],
       "affected_datasinks": [
         {
           "operation": "SELECT * FROM orders WHERE id = ?",
@@ -315,17 +409,64 @@ Each endpoint analysis produces `analysis.json`:
           "op_type": "read"
         }
       ],
-      "severity": "HIGH"
+      "severity": "HIGH",
+      "exploitation": "Attacker can query any user's order by enumerating orderId values"
     }
   ],
   "output_risk_list": [],
   "mass_assignment_risks": [],
+  "attack_scenarios": [
+    {
+      "title": "Horizontal privilege escalation via orderId enumeration",
+      "severity": "HIGH",
+      "involved_params": ["orderId"],
+      "steps": [
+        {
+          "step": 1,
+          "attacker_action": "Call GET /api/order/detail?orderId=1001 (another user's order)",
+          "exploited_params": ["orderId"],
+          "system_behavior": "System queries orders WHERE id=1001, returns order belonging to victim user",
+          "code_location": "OrderDAO.java:12"
+        },
+        {
+          "step": 2,
+          "attacker_action": "Enumerate orderId from 1 to N to harvest all orders",
+          "exploited_params": ["orderId"],
+          "system_behavior": "System returns each order without checking ownership",
+          "code_location": "OrderController.java:52"
+        }
+      ],
+      "impact": "Attacker can read ALL users' order data including sensitive information",
+      "root_cause": "orderId reaches datasink without trust anchor binding (R8)",
+      "multi_param_interaction": "Single parameter vulnerability — orderId alone is sufficient for exploitation"
+    }
+  ],
   "trust_chain_summary": {
-    "anchors": ["currentUserId @ OrderController.java:48"],
+    "anchors": [
+      {
+        "name": "currentUserId",
+        "source": "session.getAttribute(\"userId\")",
+        "file": "OrderController.java",
+        "line": 48,
+        "credibility": "trusted"
+      }
+    ],
     "trusted_params": [],
     "at_risk_params": ["orderId"],
     "risk_free_params": [],
-    "propagation_tree": {}
+    "propagation_tree": {
+      "currentUserId": {
+        "status": "anchor",
+        "propagates_to": [],
+        "note": "Exists but NOT used in orderId's data flow — this is the root cause"
+      },
+      "orderId": {
+        "status": "at_risk",
+        "rule": "R8",
+        "chain": "user_input → OrderDAO.findById(orderId) → SELECT WHERE id=? (no anchor)",
+        "reaches_datasinks": ["OrderDAO.findById @ OrderDAO.java:12-15"]
+      }
+    }
   },
   "functions_analyzed": [
     {
@@ -334,6 +475,13 @@ Each endpoint analysis produces `analysis.json`:
       "line_start": 45,
       "line_end": 78,
       "role": "entry_function"
+    },
+    {
+      "function": "OrderDAO.findById",
+      "file": "src/main/java/com/example/dao/OrderDAO.java",
+      "line_start": 10,
+      "line_end": 20,
+      "role": "datasink"
     }
   ],
   "cross_function_cache": {}
@@ -379,3 +527,90 @@ public Result getInfo(Long a1, Long a2, Long a3, Long a4) {
 - At risk: `a3`, `d`(d1,d2) — **orderId-type BOLA vulnerability**
 - Risk-free: `a4`
 - Trust chain: `sessionUid → c(via R1 with a1,a2) → e(via R3 from c.c3)`
+
+## Worked Example 2: Multi-Parameter Attack (Order Confirmation)
+
+This example shows how to analyze and report when MULTIPLE parameters are at-risk and interact.
+
+```java
+public OrderConfirmResponse confirmOrder(OrderConfirmRequest request) {
+    String currentUserId = SecurityContext.getCurrentUserId();          // line 159: anchor
+    OrderValidateMO validateMO = orderRepository.load(
+        request.getEnterpriseId(), request.getOrderNo());              // line 163: query
+    OrderParam orderParam = JSON.parseObject(
+        validateMO.getSavedParam(), OrderParam.class);                 // line 173: parse
+    // Missing: currentUserId == orderParam.getOperatorUserId() check  // line 178
+    VerifyResult verifyResult = verifyService.completeVerification(
+        request.getVerifyId());                                        // line 182: external call
+    Order order = new Order();
+    order.setOrderNo(request.getOrderNo());                            // line 192
+    order.setEnterpriseId(request.getEnterpriseId());                  // line 193: user input!
+    order.setOperatorId(orderParam.getOperatorUserId());               // line 194: stored identity
+    orderRepository.confirmOrder(order);                               // line 198: write datasink
+    return new OrderConfirmResponse(order);                            // line 200
+}
+```
+
+**Analysis walkthrough:**
+
+1. **Anchor:** `currentUserId` from `SecurityContext.getCurrentUserId()` @ line 159 → trust anchor
+
+2. **request.orderNo** (semantic_role: resource):
+   - Used in `orderRepository.load(enterpriseId, orderNo)` @ line 163 → R8: no anchor in query → **at_risk**
+   - Also used in `order.setOrderNo()` @ line 192 → flows to INSERT @ line 198 → **at_risk (write)**
+   - Risk chain: `user_input → load(enterpriseId, orderNo) → no anchor → AT RISK`
+
+3. **request.enterpriseId** (semantic_role: identity):
+   - Used in `orderRepository.load(enterpriseId, orderNo)` @ line 163 → R8: no anchor → **at_risk**
+   - Also used in `order.setEnterpriseId(request.getEnterpriseId())` @ line 193 → flows to INSERT → **at_risk (write)**
+   - R9 Check 2 VIOLATED: stored value `orderParam.getEnterpriseId()` exists but code uses user input instead
+   - Risk chain: `user_input → load() + order.setEnterpriseId() → INSERT → CRITICAL (identity + write + R9 violation)`
+
+4. **request.verifyId** (semantic_role: resource):
+   - Used in `verifyService.completeVerification(verifyId)` @ line 182 → external service call with side effect → R6/R8: no anchor → **risk_pending (HIGH)**
+   - Risk chain: `user_input → completeVerification() → external side effect → no anchor → RISK PENDING`
+
+5. **validateMO / orderParam** (from DB):
+   - Query at line 163 uses only user-controlled params → R8 → result untrusted
+   - `orderParam.getOperatorUserId()` is a stored identity field → R9 Check 1: is it compared with `currentUserId`? **NO** → **CRITICAL: Identity Impersonation**
+   - Risk chain: `load(user_input, user_input) → untrusted result → operatorUserId NOT verified → used in INSERT`
+
+**Combined Attack Scenarios:**
+
+**Scenario 1: Cross-Enterprise Order Hijacking**
+| Step | Attacker Action | Exploited Params | System Behavior | Code Location |
+|------|----------------|-----------------|-----------------|---------------|
+| 1 | Enterprise A user creates order normally in Phase 1 | — | Stores: orderNo_A, enterpriseId_A, operatorUserId_A | — |
+| 2 | Attacker (Enterprise B) obtains orderNo_A | — | — | — |
+| 3 | Attacker calls confirmOrder with `orderNo=orderNo_A, enterpriseId=enterpriseId_A` | `orderNo` + `enterpriseId` | Loads Enterprise A's order data (line 163) | OrderRepository.java:load |
+| 4 | System writes order with attacker's verifyId, using stored operatorUserId_A | `verifyId` + stored `operatorUserId` | INSERT with wrong operator identity (line 198) | OrderRepository.java:confirmOrder |
+| **Result** | **Attacker confirms Enterprise A's order using their own verification, with Enterprise A's operator identity** |
+
+**Scenario 2: Enterprise Identity Substitution**
+| Step | Attacker Action | Exploited Params | System Behavior | Code Location |
+|------|----------------|-----------------|-----------------|---------------|
+| 1 | Attacker creates own order in Phase 1 | — | Stores: orderNo_X, enterpriseId_B, operatorUserId_B | — |
+| 2 | Attacker calls confirmOrder with `orderNo=orderNo_X, enterpriseId=enterpriseId_C` (different enterprise!) | `enterpriseId` | Loads own order but writes with enterpriseId_C (line 193) | OrderService.java:193 |
+| **Result** | **Order confirmed under wrong enterprise (enterpriseId_C) — R9 Check 2 violation: user input replaces stored value** |
+
+**Multi-Parameter Interaction:**
+- `orderNo` + `enterpriseId` together control WHICH record is loaded (both needed for the query)
+- `enterpriseId` is additionally used in the WRITE operation, allowing value substitution
+- `verifyId` enables completing someone else's verification
+- All three params combine to enable a full attack: locate victim's order + substitute enterprise + complete with own verification
+
+**Trust Chain Visualization:**
+```
+Anchor: currentUserId @ line 159 [EXISTS BUT UNUSED IN DATA FLOW]
+  │
+  ├─✗ [AT RISK] request.orderNo → load(enterpriseId, orderNo) @ line 163 (R8)
+  │     └─✗ validateMO (untrusted result)
+  │           └─✗ [CRITICAL] orderParam.operatorUserId — NOT compared with currentUserId (R9 Check 1)
+  │                 └─→ order.setOperatorId() → INSERT @ line 198
+  │
+  ├─✗ [CRITICAL] request.enterpriseId (identity) → load() @ line 163 (R8)
+  │     └─✗ order.setEnterpriseId(request.enterpriseId) @ line 193 → INSERT @ line 198
+  │           └─ R9 Check 2: stored value orderParam.enterpriseId EXISTS but NOT used
+  │
+  └─✗ [HIGH] request.verifyId → completeVerification() @ line 182 (R8, side effect)
+```

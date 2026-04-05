@@ -216,6 +216,38 @@ DataSinks are operations where user-controlled parameters cause real impact. Whe
 
 ---
 
+## Category 11: Multi-Stage Operations (Cross-Phase Identity Risk)
+
+**Risk type:** Cross-stage identity impersonation (R9)
+**Severity:** CRITICAL
+
+**Pattern:** A business flow split into multiple API calls where Phase 1 stores user identity and Phase 2 uses it.
+
+**Recognition keywords:** `validate`, `confirm`, `complete`, `verify`, `approve`, `finalize`, `phase`, `stage`, `step1/step2`
+
+| Scenario | Phase 1 | Phase 2 | Risk |
+|----------|---------|---------|------|
+| Identity verification | Initiate verification, store operatorUserId | Complete verification, use stored identity | Impersonate original operator |
+| Order confirmation | Create order, store creator identity | Confirm order, use stored identity | Confirm another user's order |
+| Approval workflow | Submit for approval, store submitter | Approve, use stored submitter | Approve as different user |
+| Payment | Create payment record, store payer | Execute payment, use stored payer | Pay as another user |
+| Two-factor auth | Start 2FA, store user context | Verify 2FA code, use stored context | Bypass with another user's context |
+
+**Detection steps:**
+1. Does this endpoint read stored/persistent data (from DB, cache, message)?
+2. Does the stored data contain identity fields (operatorUserId, createdBy, ownerId)?
+3. **Does the code verify `currentUserId == storedIdentity`?** (R9 check)
+4. Does the code use stored values OR user input for business operations?
+5. Can a user call this endpoint independently without calling Phase 1 first?
+
+**Common stored identity field names:**
+```
+operatorUserId, operatorId, createdBy, createdUserId, initiatorId,
+submitterId, requesterId, ownerId, applicantId, handlerId
+```
+
+---
+
 ## DataSink Summary: Trust Rule Mapping
 
 | DataSink Category | Operation Type | Post-Auth Valid? (R5) | Post-Auth Risk? (R6) | Default Severity |

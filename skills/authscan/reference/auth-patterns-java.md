@@ -622,3 +622,100 @@ public class AuthFilter implements Filter {
 **Search:** `Method.invoke`, `reflect`, `MethodHandle`, `DynamicProxy`, `InvocationHandler`
 
 **Caution:** If controllers dispatch to service methods via reflection (e.g., generic API gateway pattern), the auth annotation on the target method may not be enforced by the framework. Check if custom invocation wrappers include auth checks.
+
+---
+
+## Priority 6: Trust Anchor Credibility Risks (CRITICAL — Check These)
+
+These patterns WEAKEN or INVALIDATE trust anchors. Finding any of these means the trust anchor may be user-controlled, which undermines ALL auth checks (Rule R10).
+
+### 6.1 No-Login-State Annotations
+
+**Search:** `noLoginExchangeUid`, `noLogin`, `allowAnonymous`, `@Anonymous`, `skipAuth`, `@IgnoreAuth`, `@NoAuth`, `@PublicApi`
+
+**Risk:** Endpoint allows unauthenticated calls. Trust anchor may not exist or may fall back to user input.
+
+```java
+@MobileServiceAnnotation(noLoginExchangeUid = true)
+public Result operation(Request request) {
+    // SecurityContext.getCurrentUserId() might be null or from user input!
+    String uid = EventContextUtils.getEventContext().getOutChannelId();
+    // Under noLogin: outChannelId may come from request, not session
+}
+```
+
+**Analysis required:**
+1. How does the framework resolve the user identity without login state?
+2. Is there a token exchange mechanism?
+3. What happens if token exchange fails?
+
+### 6.2 Token Fallback to User Input
+
+**Search:** `defaultIfEmpty`, `StringUtils.defaultIfEmpty`, `orElse`, `!= null ? tokenUid : request.get`, fallback chains for userId
+
+**Risk:** Token verification failure falls back to user-controllable parameter.
+
+```java
+// CRITICAL RISK PATTERN:
+String uid = tokenService.verify(token);
+if (uid == null) {
+    uid = request.getUserUid();  // ❌ fallback to user input
+}
+// uid is now treated as trust anchor but may be attacker-controlled!
+
+// Also dangerous:
+uid = StringUtils.defaultIfEmpty(tokenUid, request.getParameter("userId"));
+
+// And:
+uid = Optional.ofNullable(tokenUid).orElse(request.getUserUid());
+```
+
+### 6.3 Gray Toggle / Feature Flag Controlling Auth Strictness
+
+**Search:** `grayToggle`, `featureFlag`, `toggle`, `isHit`, `isEnabled`, `isOpen` combined with auth-related words (`FORCE_CHECK`, `STRICT_AUTH`, `TOKEN`, `VERIFY`, `SECURITY`)
+
+**Risk:** When toggle is OFF (or not initialized), the code takes a weaker auth path.
+
+```java
+if (grayToggleManager.isHit("FORCE_CHECK_TOKEN_TOGGLE", tntInstId)) {
+    // Toggle ON: strict verification → trusted
+    uid = tokenService.verifyStrict(token);
+    if (uid == null) throw new AuthException("Invalid token");
+} else {
+    // Toggle OFF: weak path → may fall back to user input!
+    uid = tokenService.verify(token);
+    if (uid == null) {
+        uid = request.getUserUid();  // ❌ user-controlled
+    }
+}
+```
+
+**Note:** Gray toggles are often OFF by default for new features, meaning the weak path is the DEFAULT path until the toggle is explicitly enabled. Analyze the DEFAULT behavior.
+
+### 6.4 Multi-Source Trust Anchor Resolution Chain
+
+**Search:** Chained `if/else` blocks that try multiple sources for userId, especially ending with request parameter fallback
+
+**Risk:** The WEAKEST source in the chain determines the minimum credibility.
+
+```java
+String currentUserId = null;
+// Source 1: RPC framework (trusted)
+if (RpcHolder.getUserUid() != null) {
+    currentUserId = RpcHolder.getUserUid();
+}
+// Source 2: Session (trusted)
+else if (session.getAttribute("userId") != null) {
+    currentUserId = (String) session.getAttribute("userId");
+}
+// Source 3: Token (trusted if valid)
+else if (request.getToken() != null) {
+    currentUserId = tokenService.verify(request.getToken());
+}
+// Source 4: FALLBACK — request parameter (NOT TRUSTED!)
+if (currentUserId == null) {
+    currentUserId = request.getUserUid();  // ❌ attacker controls this
+}
+```
+
+**Analysis:** Trace ALL possible paths to determine if ANY path results in user-controlled anchor.

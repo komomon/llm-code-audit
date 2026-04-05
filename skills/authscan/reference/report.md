@@ -66,16 +66,99 @@ Sort all findings by severity:
 | MEDIUM | {n} | Horizontal PE (read), Mass assignment, Data leakage |
 | LOW | {n} | Information oracle, Filter/scope param risk |
 
-## Critical & High Findings
+## Detailed Findings (Per Endpoint)
 
-### {Finding Title}
-- **Endpoint:** {endpoint} ({method})
-- **Type:** {risk_type}
-- **Parameter:** {param}
-- **Location:** {file}:{line_start}-{line_end}
-- **Description:** {explanation}
-- **Trust Chain:** {chain_description}
-- **Remediation:** {fix_suggestion}
+**For EACH endpoint with risks, generate the following complete analysis. Do NOT skip parameters — every at-risk parameter must be individually explained AND combined into attack scenarios.**
+
+### Endpoint: {endpoint} ({method})
+**Handler:** `{ClassName.method}` @ `{file}:{line_start}-{line_end}`
+**Trust Anchors:** {anchor_name} from `{source}` @ `{file}:{line}`
+
+#### All Affected Parameters
+
+**For EACH at-risk parameter, provide a complete risk card:**
+
+##### Parameter: `{param_name}` — {severity}
+- **Source:** {where the param comes from — RequestBody field / PathVariable / QueryParam}
+- **Semantic Role:** {identity / resource / filter / data}
+- **Trust Status:** {at_risk / risk_pending / identity_impersonation}
+- **Applied Rule:** {R8 / R9 / R10 / etc.}
+- **Risk Propagation Chain (full code trace):**
+  ```
+  User Input: request.{param} (user-controlled)
+    ↓ used at: {file}:{line} — {code snippet}
+    ↓ flows to: {next_function}() @ {file}:{line}
+    ↓ reaches datasink: {operation} @ {file}:{line}
+    ✗ NO trust anchor association found in this path
+  ```
+- **Vulnerability:** {what an attacker can do with this specific parameter}
+- **Code Location:** `{file}:{line_start}-{line_end}` — {brief code context}
+
+##### Parameter: `{param_name_2}` — {severity}
+(same structure for each parameter)
+
+#### Combined Attack Scenarios
+
+**CRITICAL: When multiple parameters are at-risk, describe how they work TOGETHER to enable attacks. Do not just list individual parameter risks — show the combined exploitation.**
+
+**Attack Scenario 1: {scenario_title}**
+| Step | Attacker Action | Exploited Parameter(s) | System Behavior | Code Location |
+|------|----------------|----------------------|-----------------|---------------|
+| 1 | {action} | `{param}` | {what system does} | `{file}:{line}` |
+| 2 | {action} | `{param1}` + `{param2}` | {what system does} | `{file}:{line}` |
+| 3 | ... | ... | ... | ... |
+| **Result** | **{attack outcome — what the attacker achieves}** | | | |
+
+**Attack Scenario 2: {scenario_title}** (if applicable)
+(same table format)
+
+**Multi-Parameter Interaction Analysis:**
+- How do the at-risk parameters relate to each other? (e.g., `orderNo` locates the record, `enterpriseId` is used in the write — together they enable querying any record AND writing arbitrary enterprise identity)
+- Which combination creates the most severe impact?
+- Are some parameter risks dependent on others? (e.g., `param2` is only exploitable if `param1` is also controllable)
+
+#### Trust Chain Visualization
+
+```
+Trust Anchor: {anchor_name} @ {file}:{line}
+  │
+  ├─→ [TRUSTED] {param1} → {operation} @ {file}:{line} (R1: direct association)
+  │     └─→ [TRUSTED] {derived_result} (R2: derived trust)
+  │
+  ├─✗ [AT RISK] {param3} → {datasink} @ {file}:{line} (R8: no association)
+  │     └─✗ [AT RISK] {query_result} → returned to user @ {file}:{line}
+  │
+  └─✗ [CRITICAL] {param4} (identity) → {write_datasink} @ {file}:{line} (R9: stored identity not verified)
+        └─ Stored identity: {stored_field} @ {file}:{line} — NOT compared with anchor
+```
+
+#### Remediation (Endpoint-Specific)
+
+**For each at-risk parameter, provide the specific fix with code:**
+
+```java
+// Fix for {param1}: Add trust anchor to query constraint
+// Before (vulnerable):
+{vulnerable_code_line}
+
+// After (fixed):
+{fixed_code_line}
+```
+
+```java
+// Fix for {param2}: Add identity comparison (R9)
+// Before (vulnerable):
+{vulnerable_code_line}
+
+// After (fixed):
+if (!currentUserId.equals(storedIdentity)) {
+    throw new AccessDeniedException("Not authorized");
+}
+```
+
+---
+
+(Repeat the above structure for each endpoint with findings)
 
 ## Cross-Endpoint Issues
 

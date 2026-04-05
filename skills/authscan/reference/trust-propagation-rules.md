@@ -1,6 +1,6 @@
 # Trust Propagation Rules
 
-These 8 rules are the formal judgment framework for AuthScan's trust chain analysis. Apply them in order of specificity when evaluating each parameter usage point.
+These 10 rules are the formal judgment framework for AuthScan's trust chain analysis. Apply them in order of specificity when evaluating each parameter usage point.
 
 ## The Rules
 
@@ -149,6 +149,93 @@ String[] parts = input.split(",");            // untrusted → each part still u
 DResult d = db.query("SELECT d1,d2 FROM t WHERE d3=?", a3);
 return d;  // d1, d2 returned to user based solely on user-controlled a3
 // → R8: AT RISK — classic BOLA vulnerability
+```
+
+### R9 — Stored Identity Re-validation
+
+**When:** Data retrieved from database/cache contains an **identity field** (operatorUserId, createdBy, ownerId, etc.) that represents WHO performed a previous action. This identity may differ from the current requesting user.
+
+**Result:** The stored identity field is **NOT automatically trusted** even if the query that retrieved it has some auth binding. It MUST be **explicitly compared** with the current user's trust anchor. If no such comparison exists → **Identity Impersonation Risk (CRITICAL)**.
+
+**Why this is separate from R1-R8:** R1-R8 determine whether a query result is "authorized data for this user." R9 goes further: even if you correctly retrieved data, a stored identity field within that data represents a DIFFERENT principal — the person who acted in a previous phase. The current user must prove they ARE that person.
+
+```java
+// Phase 1 stored: validateMO = {orderNo, enterpriseId, operatorUserId: "user_A"}
+// Phase 2 reads it:
+ValidateMO mo = repo.findByOrderNo(orderNo);  // even if query is auth-scoped
+
+// R9 REQUIRES this check:
+if (!currentUserId.equals(mo.getOperatorUserId())) {
+    throw new AccessDeniedException("Not the original operator");
+}
+// Without this check → identity impersonation: attacker confirms as user_A
+
+// Also: use stored values, not user input, for business operations:
+order.setEnterpriseId(mo.getEnterpriseId());  // ✅ stored value
+// NOT: order.setEnterpriseId(request.getEnterpriseId());  // ❌ user input
+```
+
+**R9 has TWO mandatory checks (both must pass):**
+
+1. **Identity comparison:** Does the code verify `currentUserId == storedIdentityField`? If not → **CRITICAL: Identity Impersonation**
+2. **Stored value usage:** For business operations, does the code use the stored field values (e.g., `mo.getEnterpriseId()`) or the user's input (e.g., `request.getEnterpriseId()`)? If user input is used when a stored value exists for the same field → **HIGH: Parameter Substitution Risk** (attacker can alter field values that should be fixed from Phase 1)
+
+**Redundant parameter heuristic:** If a user-controlled input parameter has the SAME semantic meaning as a field in stored data (e.g., both represent `enterpriseId`), this is a design smell. The endpoint should use the stored value. Flag this for review even if trust chain analysis doesn't show a direct vulnerability.
+
+**Detection pattern — multi-stage operations:**
+- Phase 1: creates record, stores current user identity (operatorUserId) and business data
+- Phase 2: reads record, uses stored identity and data for business operation
+- **Check 1:** does Phase 2 verify `currentUserId == storedOperatorUserId`?
+- **Check 2:** does Phase 2 use stored values (not user input) for business fields?
+- Common in: order confirm, payment verify, approval complete, identity verification
+
+### R10 — Trust Anchor Credibility
+
+**When:** The trust anchor itself (session userId, JWT claims, etc.) may be derived from user-controllable sources under certain conditions.
+
+**Result:** If the trust anchor can be user-controlled, it is **NOT a valid anchor** — all trust conclusions based on it are **invalidated**. Mark as **CRITICAL: Trust Anchor Compromised**.
+
+**This undermines ALL other rules.** If R10 applies, even R1-R4 conclusions become meaningless — the "anchor" in those rules isn't actually trustworthy.
+
+```java
+// DANGEROUS: trust anchor has fallback to user input
+@AuthAnnotation(noLoginExchangeUid = true)
+public Result operation(Request request) {
+    String currentUserId = null;
+
+    // Source 1: RPC framework → trusted
+    if (RpcHolder.getUserUid() != null) {
+        currentUserId = RpcHolder.getUserUid();
+    }
+    // Source 2: Token verification → trusted IF token is valid
+    else if (request.getToken() != null) {
+        currentUserId = tokenService.verify(request.getToken());
+    }
+    // Source 3: FALLBACK TO USER INPUT → NOT TRUSTED!
+    if (currentUserId == null) {
+        currentUserId = request.getUserUid();  // ❌ attacker controls "trust anchor"
+    }
+
+    // Now ALL subsequent auth checks using currentUserId are MEANINGLESS:
+    if (currentUserId.equals(order.getOwnerUserId())) {
+        // Attacker set userId = ownerUserId → check passes!
+    }
+}
+```
+
+**Detection checklist:**
+1. Does the endpoint have annotations allowing unauthenticated access? (`noLoginExchangeUid = true`, `permitAll`, etc.)
+2. Does the trust anchor getter have fallback logic to user input? (e.g., `defaultIfEmpty(tokenUid, request.getUserUid())`)
+3. Do gray toggles / feature flags control whether strict auth is enforced?
+4. Is there a conditional path where the anchor comes from the request instead of the session/token?
+
+**Gray toggle / feature flag risk pattern:**
+```java
+if (grayToggleManager.isHit("FORCE_CHECK_TOKEN")) {
+    uid = tokenService.verifyStrict(token);  // strict → trusted
+} else {
+    uid = request.getUserUid();  // toggle off → user-controlled!
+}
 ```
 
 ## Decision Flowchart
