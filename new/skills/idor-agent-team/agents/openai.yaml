@@ -1,0 +1,4 @@
+version: 1
+display_name: IDOR Agent Team
+short_description: Fine-grained main-agent plus subagent workflow for IDOR and object-level authorization reviews
+default_prompt: Build or run a fine-grained agent-team workflow to audit source code for IDOR and object-level authorization flaws using separate lanes for input parameters, auth context, call-chain tracing, relation checks, and final judgment.

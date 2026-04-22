@@ -1,0 +1,4 @@
+version: 1
+display_name: Broken Access Control Agent Team
+short_description: Specialized skill-first blueprint for main-agent plus subagent authorization reviews of source code
+default_prompt: Build or run a main-agent plus subagent workflow to audit source code for broken access control, IDOR, tenant-isolation failures, and missing server-side authorization.

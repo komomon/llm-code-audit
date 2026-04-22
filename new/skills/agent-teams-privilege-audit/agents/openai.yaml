@@ -1,0 +1,4 @@
+version: 1
+display_name: Agent Teams Privilege Audit
+short_description: Skill-first blueprint for a main agent coordinating subagents in an LLM audit workflow
+default_prompt: Build a main-agent plus subagent skill workflow for privilege-escalation review, prompt security, and tool-risk analysis.

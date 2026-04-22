@@ -1,0 +1,11 @@
+[project]
+name = "idor-agent-team-learning-scaffold"
+version = "0.1.0"
+description = "Minimal runnable orchestrator skeleton for a fine-grained IDOR agent team"
+requires-python = ">=3.10"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

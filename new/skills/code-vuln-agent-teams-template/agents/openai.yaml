@@ -1,0 +1,4 @@
+version: 1
+display_name: Code Vuln Agent Teams Template
+short_description: Generic skill-first template for building main-agent plus subagent code security review workflows
+default_prompt: Build or adapt a reusable agent-team workflow for auditing source code for vulnerabilities across multiple vulnerability classes.
